@@ -1,0 +1,18 @@
+{
+  "name": "speakcode",
+  "version": "1.0.0",
+  "description": "Voice-first AI Pair Programming",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently \"cd frontend && npm run dev\" \"cd app && uvicorn main:app --reload --host 0.0.0.0 --port 8000\"",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd app && uvicorn main:app --reload --host 0.0.0.0 --port 8000",
+    "install:all": "npm install && cd frontend && npm install"
+  },
+  "dependencies": {
+    "framer-motion": "^12.9.4"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  }
+}

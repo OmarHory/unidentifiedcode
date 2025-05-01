@@ -1,0 +1,37 @@
+{
+  "name": "speakcode-frontend",
+  "version": "1.0.0",
+  "description": "Voice-first pair programming experience",
+  "main": "index.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "keywords": [
+    "speakcode",
+    "voice-coding",
+    "pair-programming",
+    "llm",
+    "ide"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@heroicons/react": "^2.1.1",
+    "@monaco-editor/react": "^4.6.0",
+    "autoprefixer": "^10.4.21",
+    "axios": "^1.6.7",
+    "framer-motion": "^10.18.0",
+    "monaco-editor": "^0.47.0",
+    "next": "^14.1.0",
+    "postcss": "^8.4.32",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-hot-toast": "^2.4.1",
+    "react-speech-recognition": "^3.10.0",
+    "tailwindcss": "^3.4.0",
+    "uuid": "^9.0.1"
+  }
+}

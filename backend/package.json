@@ -1,0 +1,16 @@
+{
+  "name": "speakcode-backend",
+  "version": "0.1.0",
+  "description": "Backend for SpeakCode - voice-first LLM-powered pair programming experience",
+  "main": "main.py",
+  "scripts": {
+    "start": "python main.py",
+    "dev": "python main.py",
+    "test": "python -m pytest tests/"
+  },
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  }
+} 
