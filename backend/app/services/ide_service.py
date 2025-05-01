@@ -4,6 +4,8 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
 from pathlib import Path
+import shutil
+from app.core.logger import logger
 
 from app.models.ide import ProjectFile, Project, FileContent
 
@@ -41,6 +43,18 @@ class IDEService:
             technology=technology
         )
         
+        # Save project metadata to file
+        metadata_path = project_dir / ".metadata.json"
+        with open(metadata_path, "w") as f:
+            # Convert to dict with model_dump() for Pydantic v2 compatibility
+            try:
+                metadata_dict = project.dict()  # For Pydantic v1
+            except AttributeError:
+                metadata_dict = project.model_dump()  # For Pydantic v2
+                
+            json.dump(metadata_dict, f, indent=2)
+            
+        logger.info(f"Created project: {project_id} - {name}")
         return project
     
     def get_project(self, project_id: str) -> Optional[Project]:
@@ -56,18 +70,60 @@ class IDEService:
         project_path = PROJECTS_DIR / project_id
         
         if not os.path.exists(project_path):
+            logger.warning(f"Project directory not found: {project_id}")
             return None
             
         # Read metadata
         metadata_path = project_path / ".metadata.json"
         if os.path.exists(metadata_path):
-            with open(metadata_path, "r") as f:
-                metadata = json.load(f)
+            try:
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+                    
+                # Create Project object with the fields we have in metadata
+                # This handles both old and new format metadata
+                project_data = {
+                    "id": metadata.get("id", project_id),
+                    "name": metadata.get("name", "Unnamed Project"),
+                    "description": metadata.get("description", ""),
+                    "technology": metadata.get("technology", "")
+                }
+                    
+                project = Project(**project_data)
+                return project
+            except (json.JSONDecodeError, IOError) as e:
+                logger.error(f"Error reading project metadata for {project_id}: {str(e)}")
                 
-            project = Project(id=metadata["id"], name=metadata["name"])
-            return project
+                # Still return a basic project if metadata exists but is invalid
+                return Project(
+                    id=project_id,
+                    name="Recovered Project",
+                    description="Project with corrupted metadata",
+                    technology=""
+                )
+        
+        # If no metadata exists but directory does, create default metadata
+        logger.warning(f"No metadata found for project {project_id}, creating default")
+        default_project = Project(
+            id=project_id,
+            name="Unnamed Project",
+            description="",
+            technology=""
+        )
+        
+        # Save the default metadata for future use
+        try:
+            with open(metadata_path, "w") as f:
+                try:
+                    metadata_dict = default_project.dict()  # For Pydantic v1
+                except AttributeError:
+                    metadata_dict = default_project.model_dump()  # For Pydantic v2
+                    
+                json.dump(metadata_dict, f, indent=2)
+        except IOError as e:
+            logger.error(f"Failed to save default metadata for {project_id}: {str(e)}")
             
-        return None
+        return default_project
     
     def list_files(self, project_id: str, path: str = "/") -> List[ProjectFile]:
         """
@@ -83,6 +139,7 @@ class IDEService:
         # Ensure project exists
         project_path = PROJECTS_DIR / project_id
         if not os.path.exists(project_path):
+            logger.error(f"Project directory not found while listing files: {project_id}")
             raise ValueError(f"Project not found: {project_id}")
             
         # Handle path
@@ -91,40 +148,51 @@ class IDEService:
         
         # Ensure the path is within the project
         if not os.path.abspath(target_path).startswith(os.path.abspath(project_path)):
+            logger.warning(f"Invalid path requested: {path} for project {project_id}")
             raise ValueError("Invalid path")
             
-        if not os.path.exists(target_path) or not os.path.isdir(target_path):
+        if not os.path.exists(target_path):
+            logger.info(f"Path not found in project: {path} for project {project_id}")
+            return []
+            
+        if not os.path.isdir(target_path):
+            logger.warning(f"Path is not a directory: {path} for project {project_id}")
             return []
             
         files = []
         
-        for item in os.listdir(target_path):
-            # Skip metadata file
-            if item == ".metadata.json":
-                continue
+        try:
+            for item in os.listdir(target_path):
+                # Skip metadata file
+                if item == ".metadata.json":
+                    continue
+                    
+                item_path = os.path.join(target_path, item)
+                rel_path = os.path.relpath(item_path, project_path)
                 
-            item_path = os.path.join(target_path, item)
-            rel_path = os.path.relpath(item_path, project_path)
-            
-            # Use forward slashes for consistency
-            rel_path = rel_path.replace(os.path.sep, "/")
-            
-            file_type = "directory" if os.path.isdir(item_path) else "file"
-            size = os.path.getsize(item_path) if file_type == "file" else None
-            
-            # Format last modified time
-            last_modified = datetime.fromtimestamp(
-                os.path.getmtime(item_path)
-            ).isoformat()
-            
-            files.append(
-                ProjectFile(
-                    path=rel_path,
-                    type=file_type,
-                    size=size,
-                    last_modified=last_modified
+                # Use forward slashes for consistency
+                rel_path = rel_path.replace(os.path.sep, "/")
+                
+                file_type = "directory" if os.path.isdir(item_path) else "file"
+                size = os.path.getsize(item_path) if file_type == "file" else None
+                
+                # Format last modified time
+                last_modified = datetime.fromtimestamp(
+                    os.path.getmtime(item_path)
+                ).isoformat()
+                
+                files.append(
+                    ProjectFile(
+                        path=rel_path,
+                        type=file_type,
+                        size=size,
+                        last_modified=last_modified
+                    )
                 )
-            )
+        except Exception as e:
+            logger.exception(f"Error listing files in {path} for project {project_id}: {str(e)}")
+            # Return empty list on error rather than failing
+            return []
             
         return files
     

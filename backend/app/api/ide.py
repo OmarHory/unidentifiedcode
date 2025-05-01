@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Body, Query
+from fastapi import APIRouter, HTTPException, Body, Query, status
 from typing import List, Optional
+from app.core.logger import logger
 
 from app.models.ide import Project, ProjectFile, FileContent, FileListResponse, FileOperation
 from app.services.ide_service import IDEService
@@ -20,10 +21,18 @@ async def create_project(
     """
     try:
         project = ide_service.create_project(name, description, technology)
+        logger.info(f"Created project via API: {project.id} - {name}")
         return project
-    except Exception as e:
+    except ValueError as e:
+        logger.error(f"Value error creating project: {str(e)}")
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid project data: {str(e)}"
+        )
+    except Exception as e:
+        logger.exception(f"Error creating project: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating project: {str(e)}"
         )
 
@@ -32,14 +41,22 @@ async def get_project(project_id: str):
     """
     Get project details
     """
-    project = ide_service.get_project(project_id)
-    if not project:
+    try:
+        project = ide_service.get_project(project_id)
+        if not project:
+            logger.warning(f"Project not found in API request: {project_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+        
+        return project
+    except Exception as e:
+        logger.exception(f"Unexpected error retrieving project {project_id}: {str(e)}")
         raise HTTPException(
-            status_code=404,
-            detail=f"Project not found: {project_id}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving project: {str(e)}"
         )
-    
-    return project
 
 @router.get("/projects/{project_id}/files", response_model=FileListResponse)
 async def list_files(project_id: str, path: str = "/"):
@@ -50,8 +67,9 @@ async def list_files(project_id: str, path: str = "/"):
         # Validate project ID
         project = ide_service.get_project(project_id)
         if not project:
+            logger.warning(f"Project not found when listing files: {project_id}")
             raise HTTPException(
-                status_code=404, 
+                status_code=status.HTTP_404_NOT_FOUND, 
                 detail=f"Project not found: {project_id}"
             )
             
@@ -59,13 +77,15 @@ async def list_files(project_id: str, path: str = "/"):
         files = ide_service.list_files(project_id, path)
         return FileListResponse(files=files)
     except ValueError as e:
+        logger.error(f"Value error listing files for project {project_id}: {str(e)}")
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
+        logger.exception(f"Error listing files for project {project_id}: {str(e)}")
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error listing files: {str(e)}"
         )
 
@@ -75,22 +95,34 @@ async def get_file_content(project_id: str, file_path: str):
     Get file content
     """
     try:
+        # Validate project first
+        project = ide_service.get_project(project_id)
+        if not project:
+            logger.warning(f"Project not found when getting file content: {project_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+            
         file_content = ide_service.read_file(project_id, file_path)
         if not file_content:
+            logger.warning(f"File not found: {file_path} in project {project_id}")
             raise HTTPException(
-                status_code=404,
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"File not found: {file_path}"
             )
         
         return file_content
     except ValueError as e:
+        logger.error(f"Value error reading file {file_path} from project {project_id}: {str(e)}")
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
+        logger.exception(f"Error reading file {file_path} from project {project_id}: {str(e)}")
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error reading file: {str(e)}"
         )
 
