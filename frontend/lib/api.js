@@ -245,7 +245,8 @@ export const projectsApi = {
     return api.post('/ide/projects', { 
       name, 
       description: metadata.description || '', 
-      technology: metadata.technology || ''
+      technology: metadata.technology || '',
+      meta_data: metadata  // Include the full metadata object as meta_data
     }, {
       timeout: 60000 // 60 seconds timeout for project creation specifically
     });

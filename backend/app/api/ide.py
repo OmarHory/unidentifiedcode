@@ -27,7 +27,7 @@ async def create_project(
             name=project.name,
             description=project.description,
             technology=project.technology,
-            meta_data=project.metadata,
+            meta_data=project.meta_data,  # Changed from metadata to meta_data to match the model
             owner_id=current_user.id
         )
         db.add(new_project)

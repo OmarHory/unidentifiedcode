@@ -6,14 +6,14 @@ class ProjectCreate(BaseModel):
     name: str
     description: Optional[str] = None
     technology: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    meta_data: Optional[Dict[str, Any]] = None  # Changed from metadata to meta_data to match the database model
 
 class ProjectResponse(BaseModel):
     id: str
     name: str
     description: Optional[str] = None
     technology: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    meta_data: Optional[Dict[str, Any]] = None  # Changed from metadata to meta_data to match the database model
     owner_id: str
     created_at: datetime
     updated_at: Optional[datetime] = None
