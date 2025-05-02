@@ -2,65 +2,101 @@ import json
 import uuid
 from typing import List, Dict, Any, Optional, AsyncGenerator
 
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 from app.core.config import settings
 from app.models.chat import ChatMessage, MessageRole, MessageContent, MessageType
+from app.core.logger import logger
 
 class LLMService:
     def __init__(self):
-        self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         self.model = settings.LLM_MODEL
         
-    async def generate_completion(
-        self, 
-        messages: List[ChatMessage], 
-        project_context: Optional[Dict[str, Any]] = None
-    ) -> ChatMessage:
-        """
-        Generate a chat completion using the OpenAI API
-        """
-        # Convert our internal message format to OpenAI format
-        openai_messages = self._convert_to_openai_messages(messages, project_context)
-        
-        # Call the OpenAI API
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=openai_messages,
-            temperature=0.7,
-        )
-        
-        # Convert the response back to our internal format
-        assistant_message = self._convert_from_openai_message(response.choices[0].message)
-        return assistant_message
-        
-    async def generate_completion_streaming(
-        self, 
-        messages: List[ChatMessage], 
+        if not settings.OPENAI_API_KEY:
+            raise ValueError("OpenAI API key is not configured")
+    
+    async def generate_completion_stream(
+        self,
+        messages: List[ChatMessage],
         project_context: Optional[Dict[str, Any]] = None
     ) -> AsyncGenerator[str, None]:
         """
-        Generate a streaming chat completion using the OpenAI API
+        Generate a streaming chat completion
         
-        Yields chunks of the response as they are generated
+        Args:
+            messages: List of chat messages
+            project_context: Optional project context
+            
+        Yields:
+            Text chunks from the completion
         """
-        # Convert our internal message format to OpenAI format
-        openai_messages = self._convert_to_openai_messages(messages, project_context)
+        try:
+            # Convert messages to OpenAI format
+            openai_messages = []
+            
+            # Add system message with project context if available
+            if project_context:
+                context_message = f"You are assisting with a {project_context.get('technology', '')} project. "
+                context_message += f"Current file: {project_context.get('current_file', 'Not specified')}. "
+                context_message += f"Project description: {project_context.get('description', 'Not specified')}"
+                
+                openai_messages.append({
+                    "role": "system",
+                    "content": context_message
+                })
+            
+            # Add conversation messages
+            for msg in messages:
+                openai_messages.append({
+                    "role": msg.role.value,
+                    "content": msg.content
+                })
+            
+            # Generate streaming completion
+            stream = await self.client.chat.completions.create(
+                model=self.model,
+                messages=openai_messages,
+                stream=True
+            )
+            
+            async for chunk in stream:
+                if chunk.choices[0].delta.content is not None:
+                    yield chunk.choices[0].delta.content
+                    
+        except Exception as e:
+            logger.error(f"Error generating streaming completion: {str(e)}")
+            raise
+    
+    async def generate_completion(
+        self,
+        messages: List[ChatMessage],
+        project_context: Optional[Dict[str, Any]] = None
+    ) -> ChatMessage:
+        """
+        Generate a chat completion (uses streaming internally)
         
-        # Call the OpenAI API with streaming enabled
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=openai_messages,
-            temperature=0.7,
-            stream=True,
-        )
-        
-        # Stream the response
-        content_so_far = ""
-        for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                content_piece = chunk.choices[0].delta.content
-                content_so_far += content_piece
-                yield content_piece
+        Args:
+            messages: List of chat messages
+            project_context: Optional project context
+            
+        Returns:
+            ChatMessage with the completion
+        """
+        try:
+            # Use streaming to generate the completion
+            full_response = ""
+            async for chunk in self.generate_completion_stream(messages, project_context):
+                full_response += chunk
+            
+            # Create chat message from the response
+            return ChatMessage(
+                role=MessageRole.ASSISTANT,
+                content=full_response
+            )
+            
+        except Exception as e:
+            logger.error(f"Error generating completion: {str(e)}")
+            raise
     
     def _convert_to_openai_messages(
         self, 
@@ -188,4 +224,7 @@ class LLMService:
         return {
             "explanation": response.choices[0].message.content,
             "file_path": file_path
-        } 
+        }
+
+# Create global LLM service instance
+llm_service = LLMService() 

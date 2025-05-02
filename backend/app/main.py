@@ -1,95 +1,88 @@
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, status, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
 import uvicorn
 import os
 import sys
 import traceback
 from datetime import datetime
 import asyncio
+from typing import Optional
 
-from app.api import code_chat, voice, diff, ide, logs
+from app.api import code_chat, voice, diff, ide, logs, auth
 from app.core.config import settings
 from app.core.logger import logger
+from app.core.middleware import RateLimitMiddleware, AuthMiddleware
 from app.api.voice import cleanup_stale_sessions
+from app.services.session_service import session_service
 
 app = FastAPI(
     title="SpeakCode API",
     description="Voice-first, LLM-powered pair-programming experience",
     version="0.1.0",
+    docs_url=None,  # Disable default docs
+    redoc_url=None,  # Disable default redoc
 )
 
-# Configure CORS
+# Configure CORS with explicit headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "Authorization", "Content-Type"],
+    expose_headers=["*"],
 )
 
+# Add rate limiting and auth middleware
+app.middleware("http")(RateLimitMiddleware())
+app.middleware("http")(AuthMiddleware())
+
 # Include routers
+app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(code_chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(voice.router, prefix="/api/voice", tags=["Voice"])
 app.include_router(diff.router, prefix="/api/diff", tags=["Diff"])
 app.include_router(ide.router, prefix="/api/ide", tags=["IDE"])
 app.include_router(logs.router, prefix="/api/logs", tags=["Logs"])
 
-# Exception handler middleware
-@app.middleware("http")
-async def exception_middleware(request: Request, call_next):
-    request_id = f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{id(request)}"
-    request_path = f"{request.method} {request.url.path}"
+# Custom exception handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Global exception handler caught: {str(exc)}")
+    logger.error(traceback.format_exc())
     
-    # Log request
-    logger.info(f"Request started: {request_id} - {request_path}")
-    
-    start_time = datetime.now()
-    
-    try:
-        response = await call_next(request)
-        
-        # Log successful response
-        process_time = (datetime.now() - start_time).total_seconds() * 1000
-        logger.info(f"Request completed: {request_id} - {request_path} - Status: {response.status_code} - Duration: {process_time:.2f}ms")
-        
-        return response
-    except HTTPException as e:
-        # Handle HTTP exceptions (these are expected errors like 404, 400, etc.)
-        logger.warning(f"HTTP Exception in {request_path}: {e.status_code} - {e.detail}")
-        process_time = (datetime.now() - start_time).total_seconds() * 1000
-        logger.info(f"Request failed: {request_id} - {request_path} - Status: {e.status_code} - Duration: {process_time:.2f}ms")
-        
+    if isinstance(exc, HTTPException):
         return JSONResponse(
-            status_code=e.status_code,
-            content={"detail": e.detail}
+            status_code=exc.status_code,
+            content={"detail": exc.detail}
         )
-    except Exception as e:
-        # Handle unexpected exceptions
-        process_time = (datetime.now() - start_time).total_seconds() * 1000
-        
-        # Get full exception details with traceback
-        exc_info = sys.exc_info()
-        exception_details = "".join(traceback.format_exception(*exc_info))
-        
-        # Log detailed error information
-        logger.exception(
-            f"Unhandled exception in {request_path} [{request_id}]: {str(e)}\n"
-            f"Exception details: {exception_details}"
-        )
-        
-        # Log request failure summary
-        logger.error(f"Request failed: {request_id} - {request_path} - Status: 500 - Duration: {process_time:.2f}ms")
-        
-        error_message = str(e) if settings.DEBUG else "Internal Server Error"
-        
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "detail": error_message,
-                "request_id": request_id  # Include request ID for troubleshooting
-            }
-        )
+    
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "Internal server error"}
+    )
+
+# Custom OpenAPI documentation
+@app.get("/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title=f"{settings.APP_NAME} - API Documentation",
+        swagger_favicon_url="/favicon.ico"
+    )
+
+@app.get("/openapi.json", include_in_schema=False)
+async def get_openapi_schema():
+    openapi_schema = get_openapi(
+        title=settings.APP_NAME,
+        version="1.0.0",
+        description="Voice-first, LLM-powered pair-programming experience API documentation",
+        routes=app.routes,
+    )
+    return openapi_schema
 
 @app.get("/")
 async def root():
@@ -102,74 +95,63 @@ async def health_check():
     return {"status": "healthy"}
 
 @app.get("/api/health", tags=["Health"])
-async def health_check():
+async def api_health_check():
     logger.info("API health check endpoint accessed")
-    return {"status": "ok", "message": "SpeakCode API is running"}
+    return {
+        "status": "ok",
+        "message": "SpeakCode API is running",
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "1.0.0"
+    }
 
-# Startup event handler
+@app.get("/api/debug/auth")
+async def debug_auth(request: Request, authorization: Optional[str] = Header(None)):
+    """
+    Debug endpoint to check authentication headers
+    """
+    logger.info("Debug auth endpoint accessed")
+    
+    # Log all headers and request info
+    request_info = {
+        "headers": dict(request.headers),
+        "url": str(request.url),
+        "method": request.method,
+        "client": request.client and request.client.host,
+        "authorization": authorization,
+    }
+    
+    # Try to get user from request state (set by auth middleware)
+    user = getattr(request.state, "user", None)
+    
+    # Log request info
+    logger.info(f"Debug auth request: {request_info}")
+    
+    return {
+        "status": "ok",
+        "message": "Auth debug information",
+        "request_info": request_info,
+        "auth_status": "authenticated" if user else "not authenticated",
+        "user": user,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+# Background tasks
 @app.on_event("startup")
 async def startup_event():
-    """
-    Initialize resources on application startup
-    """
-    logger.info("Starting SpeakCode API server")
-    
-    # Ensure projects directory exists
-    try:
-        os.makedirs("projects", exist_ok=True)
-        logger.info("Projects directory ensured")
-    except Exception as e:
-        logger.exception(f"Failed to create projects directory: {str(e)}")
-        # This is critical enough to re-raise
-        raise
+    # Start background tasks
+    asyncio.create_task(cleanup_stale_sessions())
+    logger.info("Started background tasks")
 
-    # Ensure logs directory exists
-    try:
-        os.makedirs("logs", exist_ok=True)
-        logger.info("Logs directory ensured")
-    except Exception as e:
-        logger.exception(f"Failed to create logs directory: {str(e)}")
-    
-    # Log configuration information
-    logger.info(f"Running with configuration: DEBUG={settings.DEBUG}")
-    logger.info(f"CORS origins configured: {settings.CORS_ORIGINS}")
-    
-    if not settings.OPENAI_API_KEY:
-        logger.warning("OPENAI_API_KEY not set - OpenAI functionality will not work")
-    
-    # Start voice service session cleanup task
-    voice.cleanup_task = asyncio.create_task(cleanup_stale_sessions())
-    logger.info("Voice service session cleanup task started")
-
-# Shutdown event handler
 @app.on_event("shutdown")
 async def shutdown_event():
-    """
-    Clean up resources on application shutdown
-    """
-    logger.info("Shutting down SpeakCode API server")
-    
-    # Cancel voice service cleanup task if running
-    if voice.cleanup_task and not voice.cleanup_task.done():
-        voice.cleanup_task.cancel()
-        try:
-            await voice.cleanup_task
-        except asyncio.CancelledError:
-            pass
-        logger.info("Voice service session cleanup task stopped")
-    
-    # Clean up any remaining ASR sessions
-    for session_id, session in list(voice.asr_sessions.items()):
-        try:
-            websocket = session["websocket"]
-            await websocket.close(code=1000, reason="Server shutdown")
-        except:
-            pass
-        
-    # Clear all sessions
-    voice.asr_sessions.clear()
-    logger.info("All voice sessions cleaned up")
+    # Cleanup resources
+    logger.info("Shutting down application")
 
 if __name__ == "__main__":
     # Run the FastAPI app
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True) 
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=settings.DEBUG
+    ) 

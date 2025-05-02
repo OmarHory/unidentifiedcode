@@ -6,8 +6,17 @@ import { CodeBracketIcon, PlusIcon, FolderIcon, ChevronRightIcon } from '@heroic
 import Layout from '../components/Layout';
 import { useProject } from '../contexts/ProjectContext';
 import toast from 'react-hot-toast';
+import ProtectedRoute from '../components/ProtectedRoute';
 
-export default function Dashboard() {
+export default function ProtectedDashboard() {
+  return (
+    <ProtectedRoute>
+      <Dashboard />
+    </ProtectedRoute>
+  );
+}
+
+function Dashboard() {
   const router = useRouter();
   const { projects, createProject, loadProject, setProjects } = useProject();
   const [isCreating, setIsCreating] = useState(false);

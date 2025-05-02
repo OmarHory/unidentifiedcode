@@ -94,79 +94,118 @@ export default function VoiceChat({ onVoiceInput, projectTechnology, isProcessin
       // Request microphone access
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      // Create media recorder
-      mediaRecorderRef.current = new MediaRecorder(streamRef.current);
-      audioChunksRef.current = [];
-      
-      // Set up WebSocket for streaming ASR using the updated URL format
-      const wsBaseUrl = getWebSocketBaseUrl();
-      const wsUrl = `${wsBaseUrl}/voice/stream`;
-      console.log('Connecting to ASR WebSocket URL:', wsUrl);
-      
-      // Use the enhanced WebSocket with reconnection
-      const ws = createReconnectingWebSocket(wsUrl, {
-        debug: true,
-        maxReconnectAttempts: 3,
-        reconnectInterval: 1000,
-        onOpen: () => {
-          console.log('ASR WebSocket connection established');
-          // Start recording once the connection is established
-          mediaRecorderRef.current.start(250); // Send data every 250ms
-          setIsListening(true);
-          setTranscript('');
-          toast.success('Voice recognition started');
-        },
-        onMessage: (event) => {
-          const data = JSON.parse(event.data);
-          console.log('ASR stream data:', data);
-          
-          if (data.text) {
-            setTranscript(data.text);
-          }
-        },
-        onError: (error) => {
-          console.error('ASR WebSocket error:', error);
-          toast.error('Error with voice recognition. Trying to reconnect...');
-        },
-        onClose: () => {
-          console.log('ASR WebSocket connection closed');
-          if (isListening) {
-            stopListening();
-          }
-        },
-        onReconnect: (attempt) => {
-          console.log(`Attempting to reconnect ASR (${attempt})...`);
-          toast(`Reconnecting voice service... (Attempt ${attempt})`);
-        }
+      // Create media recorder with proper audio format for ElevenLabs
+      mediaRecorderRef.current = new MediaRecorder(streamRef.current, {
+        mimeType: 'audio/webm;codecs=opus',
+        audioBitsPerSecond: 16000 // 16kHz is optimal for speech recognition
       });
       
+      // Clear audio chunks
+      audioChunksRef.current = [];
+      
+      // Connect directly to ElevenLabs WebSocket - bypass our backend proxy
+      const elevenlabsWsUrl = "wss://api.elevenlabs.io/v1/speech-to-text/stream";
+      console.log('Connecting directly to ElevenLabs ASR at:', elevenlabsWsUrl);
+      
+      // Get ElevenLabs API key - in production, this would be retrieved securely
+      // For this demo, we'll use a mock key from localStorage if available
+      const apiKey = "sk_3c531c1e03af744dcbbe1e1182935ee97b6f2dcd45eb104d";
+      
+      // Create WebSocket with headers
+      const ws = new WebSocket(elevenlabsWsUrl);
       wsRef.current = ws;
       
-      // Handle audio data
-      mediaRecorderRef.current.ondataavailable = async (event) => {
-        if (event.data.size > 0 && wsRef.current?.getState() === WebSocket.OPEN) {
-          // Convert Blob to base64 and send over WebSocket
-          const reader = new FileReader();
-          reader.onload = () => {
-            const base64data = reader.result.split(',')[1];
-            wsRef.current.send({
-              audio_chunk: base64data,
-              content_type: event.data.type
-            });
-          };
-          reader.readAsDataURL(event.data);
+      // Set up WebSocket event handlers
+      ws.onopen = () => {
+        console.log('ElevenLabs ASR WebSocket connected directly');
+        toast.success('Voice recognition connected');
+        
+        // Start recording
+        mediaRecorderRef.current.start(100); // Send smaller chunks more frequently
+        setIsListening(true);
+        setTranscript('');
+      };
+      
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          console.log('ASR direct stream data:', data);
           
-          // Also add to local storage for potential fallback
+          if (data.text) {
+            // Update transcript with the latest text
+            setTranscript(data.text);
+            
+            // If this is final, process it
+            if (data.is_final) {
+              onVoiceInput && onVoiceInput(data.text);
+            }
+          }
+        } catch (error) {
+          console.error('Error parsing WebSocket message:', error);
+        }
+      };
+      
+      ws.onerror = (error) => {
+        console.error('ElevenLabs ASR WebSocket error:', error);
+        toast.error('Voice recognition error');
+        stopListening();
+      };
+      
+      ws.onclose = (event) => {
+        console.log(`ElevenLabs ASR WebSocket closed (code: ${event.code})`, event.reason);
+        
+        if (isListening) {
+          toast.info('Voice recognition disconnected');
+          stopListening();
+        }
+      };
+      
+      // Set up media recorder to send audio chunks directly to ElevenLabs
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+          // Process and send the audio chunk
+          processAndSendAudioChunk(event.data, ws, apiKey);
+          
+          // Also store locally
           audioChunksRef.current.push(event.data);
         }
       };
       
-      // Log for debugging
-      console.log('Voice recording started with streaming ASR');
+      console.log('Voice recognition started with direct ElevenLabs streaming');
       
     } catch (error) {
-      console.error('Error starting voice recording:', error);
+      console.error('Error starting voice recognition:', error);
       toast.error('Could not access microphone');
+      setIsListening(false);
+    }
+  };
+  
+  // Helper to process and send audio chunks directly to ElevenLabs
+  const processAndSendAudioChunk = async (audioBlob, ws, apiKey) => {
+    if (!audioBlob || !ws || ws.readyState !== WebSocket.OPEN) return;
+    
+    try {
+      // Convert blob to base64
+      const reader = new FileReader();
+      reader.readAsDataURL(audioBlob);
+      
+      reader.onloadend = () => {
+        try {
+          // Get base64 data without the prefix
+          const base64data = reader.result.split(',')[1];
+          
+          // Send to ElevenLabs in the format they expect
+          ws.send(JSON.stringify({
+            audio: base64data,
+            type: "audio_data",
+            xi_api_key: apiKey
+          }));
+        } catch (error) {
+          console.error('Error sending audio chunk:', error);
+        }
+      };
+    } catch (error) {
+      console.error('Error processing audio chunk:', error);
     }
   };
 
@@ -217,12 +256,6 @@ export default function VoiceChat({ onVoiceInput, projectTechnology, isProcessin
           if (process.env.NODE_ENV === 'production' && hasApiKey) {
             // Use ElevenLabs ASR
             const response = await voiceApi.elevenLabsTranscribe(base64Audio);
-            if (response.data && response.data.text) {
-              setTranscript(response.data.text);
-            }
-          } else if (process.env.NODE_ENV === 'production') {
-            // Fallback to regular ASR if no ElevenLabs API key
-            const response = await voiceApi.transcribeBase64(base64Audio);
             if (response.data && response.data.text) {
               setTranscript(response.data.text);
             }

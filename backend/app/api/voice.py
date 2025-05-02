@@ -8,10 +8,12 @@ import asyncio
 import io
 import time
 from openai import OpenAIError
+import websockets
 
 from app.models.chat import VoiceTranscriptionRequest, VoiceTranscriptionResponse
-from app.services.voice_service import VoiceService
+from app.services.voice_service import VoiceService, voice_service
 from app.core.logger import logger
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -28,7 +30,7 @@ SESSION_CLEANUP_INTERVAL = 60  # 1 minute
 
 class TextToSpeechRequest(BaseModel):
     text: str
-    voice: str = "alloy"  # alloy, echo, fable, onyx, nova, shimmer
+    voice_id: Optional[str] = None
 
 class ElevenLabsTextToSpeechRequest(BaseModel):
     text: str
@@ -129,7 +131,7 @@ async def convert_text_to_speech(request: TextToSpeechRequest):
         # Convert text to speech using the voice service
         audio_data = await voice_service.text_to_speech(
             request.text,
-            request.voice
+            request.voice_id
         )
         
         return TextToSpeechResponse(audio_data=audio_data)
@@ -287,124 +289,128 @@ async def end_phone_call(call_id: str):
             detail=f"Error ending phone call: {str(e)}"
         )
 
-@router.websocket("/stream")
+@router.websocket("/asr/stream")
 async def stream_asr(websocket: WebSocket):
     """
-    WebSocket endpoint for streaming ASR
+    WebSocket endpoint for streaming ASR using ElevenLabs
     """
     await websocket.accept()
+    logger.info("WebSocket connection accepted for ElevenLabs ASR streaming")
     
-    # Generate a unique session ID
-    session_id = str(uuid.uuid4())
-    session_start_time = time.time()
-    last_activity_time = time.time()
-    
-    asr_sessions[session_id] = {
-        "websocket": websocket,
-        "buffer": b"",
-        "transcript": "",
-        "start_time": session_start_time,
-        "last_activity": last_activity_time
-    }
-    
-    logger.info(f"ASR streaming session started: {session_id}")
-    
-    # Start the timeout watcher task
-    timeout_task = asyncio.create_task(
-        monitor_session_timeout(session_id, websocket)
-    )
-    
-    try:
-        while True:
-            # Receive message from client with a timeout
-            data = await asyncio.wait_for(
-                websocket.receive_text(),
-                timeout=WEBSOCKET_IDLE_TIMEOUT
-            )
-            
-            # Update last activity time
-            last_activity_time = time.time()
-            if session_id in asr_sessions:
-                asr_sessions[session_id]["last_activity"] = last_activity_time
-            
-            # Check session duration
-            if time.time() - session_start_time > MAX_SESSION_DURATION:
-                logger.warning(f"Session {session_id} exceeded maximum duration")
-                await websocket.send_json({
-                    "error": "Session timeout: maximum duration exceeded",
-                    "is_final": True
-                })
-                break
-            
-            message = json.loads(data)
-            
-            if "audio_chunk" in message:
-                # Decode the base64 audio chunk
-                try:
-                    audio_chunk = base64.b64decode(message["audio_chunk"])
-                    
-                    # Process the audio chunk with the voice service
-                    result = await voice_service.process_audio_chunk(audio_chunk, session_id)
-                    
-                    # Send the result back to the client
-                    await websocket.send_json({
-                        "text": result.get("text", ""),
-                        "is_final": result.get("is_final", False)
-                    })
-                except ValueError as e:
-                    logger.error(f"Invalid audio data in session {session_id}: {str(e)}")
-                    await websocket.send_json({
-                        "error": f"Invalid audio data: {str(e)}",
-                        "is_final": False
-                    })
-                except Exception as e:
-                    logger.exception(f"Error processing audio chunk in session {session_id}: {str(e)}")
-                    await websocket.send_json({
-                        "error": f"Processing error: {str(e)}",
-                        "is_final": False
-                    })
-                
-    except asyncio.TimeoutError:
-        logger.warning(f"Session {session_id} timed out due to inactivity")
+    # Check if ElevenLabs API key is configured
+    if not settings.ELEVENLABS_API_KEY:
         await websocket.send_json({
-            "error": "Session timeout: inactivity",
+            "error": "ElevenLabs API key is not configured",
             "is_final": True
         })
-    except WebSocketDisconnect:
-        logger.info(f"ASR streaming session disconnected: {session_id}")
+        await websocket.close()
+        return
+    
+    # Connect to ElevenLabs ASR WebSocket
+    try:
+        # ElevenLabs ASR WebSocket URL
+        elevenlabs_ws_url = "wss://api.elevenlabs.io/v1/speech-to-text/stream"
+        
+        # Set up headers with API key
+        headers = {
+            "xi-api-key": settings.ELEVENLABS_API_KEY
+        }
+        
+        logger.info(f"Connecting to ElevenLabs ASR WebSocket at {elevenlabs_ws_url}")
+        
+        # Create WebSocket connection to ElevenLabs
+        async with websockets.connect(
+            elevenlabs_ws_url,
+            extra_headers=headers
+        ) as elevenlabs_ws:
+            logger.info("Connected to ElevenLabs ASR WebSocket")
+            
+            # Send success message to client
+            await websocket.send_json({
+                "status": "connected",
+                "message": "Connected to ElevenLabs ASR service"
+            })
+            
+            # Create tasks for handling bidirectional communication
+            async def forward_to_elevenlabs():
+                """Forward audio chunks from client to ElevenLabs"""
+                try:
+                    while True:
+                        # Receive audio chunk from client
+                        message = await websocket.receive_json()
+                        
+                        if "audio_chunk" in message:
+                            # Create the ElevenLabs compatible message
+                            elevenlabs_message = {
+                                "audio": message["audio_chunk"],
+                                "type": "audio_data"
+                            }
+                            
+                            # Forward to ElevenLabs
+                            await elevenlabs_ws.send(json.dumps(elevenlabs_message))
+                except Exception as e:
+                    logger.error(f"Error forwarding to ElevenLabs: {str(e)}")
+            
+            async def forward_to_client():
+                """Forward transcription results from ElevenLabs to client"""
+                try:
+                    while True:
+                        # Receive result from ElevenLabs
+                        result = await elevenlabs_ws.recv()
+                        logger.debug(f"Received from ElevenLabs: {result[:100]}...")
+                        
+                        # Parse result
+                        result_data = json.loads(result)
+                        
+                        # Forward to client
+                        await websocket.send_json({
+                            "text": result_data.get("text", ""),
+                            "is_final": result_data.get("is_final", False),
+                            "confidence": result_data.get("confidence", 0)
+                        })
+                except Exception as e:
+                    logger.error(f"Error forwarding to client: {str(e)}")
+            
+            # Create and run both tasks
+            forward_task = asyncio.create_task(forward_to_elevenlabs())
+            receive_task = asyncio.create_task(forward_to_client())
+            
+            # Wait for either task to complete (which would indicate a disconnect)
+            done, pending = await asyncio.wait(
+                [forward_task, receive_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # Cancel any pending tasks
+            for task in pending:
+                task.cancel()
+            
+            logger.info("ASR streaming session ended")
+    
+    except websockets.exceptions.ConnectionClosed:
+        logger.warning("Connection to ElevenLabs closed unexpectedly")
+        await websocket.send_json({
+            "error": "Connection to ElevenLabs closed",
+            "is_final": True
+        })
     except Exception as e:
-        logger.exception(f"Error in ASR streaming session {session_id}: {str(e)}")
+        error_message = f"Error in ASR streaming: {str(e)}"
+        logger.error(error_message)
         try:
             await websocket.send_json({
-                "error": f"Server error: {str(e)}",
+                "error": error_message,
                 "is_final": True
             })
         except:
             pass
-    finally:
-        # Clean up session
-        if session_id in asr_sessions:
-            del asr_sessions[session_id]
-        
-        # Cancel timeout task
-        timeout_task.cancel()
-        try:
-            await timeout_task
-        except asyncio.CancelledError:
-            pass
-        
-        logger.info(f"ASR streaming session ended: {session_id}")
-        
-        # Ensure WebSocket is closed
-        try:
-            await websocket.close()
-        except:
-            pass
+    
+    # Ensure websocket is closed
+    await websocket.close()
 
 @router.websocket("/tts/stream")
 async def stream_tts(websocket: WebSocket):
     """
-    WebSocket endpoint for streaming TTS
+    WebSocket endpoint for streaming TTS using ElevenLabs
     """
     await websocket.accept()
     
@@ -412,7 +418,7 @@ async def stream_tts(websocket: WebSocket):
     logger.info(f"TTS streaming session started: {session_id}")
     
     try:
-        # Receive message from client with timeout
+        # Receive text from client
         data = await asyncio.wait_for(
             websocket.receive_text(),
             timeout=WEBSOCKET_IDLE_TIMEOUT
@@ -422,15 +428,13 @@ async def stream_tts(websocket: WebSocket):
         
         if "text" in message:
             text = message["text"]
-            voice = message.get("voice", "alloy")
+            voice_id = message.get("voice_id")
             
-            logger.info(f"TTS streaming request: {len(text)} chars, voice: {voice}")
+            logger.info(f"TTS streaming request: {len(text)} chars")
             
             # Stream the TTS response
-            chunk_generator = voice_service.stream_text_to_speech(text, voice)
-            
             chunk_index = 0
-            async for audio_chunk in chunk_generator:
+            async for audio_chunk in voice_service.text_to_speech_streaming(text, voice_id):
                 # Send the chunk to the client
                 await websocket.send_json({
                     "type": "audio_chunk",
@@ -438,9 +442,6 @@ async def stream_tts(websocket: WebSocket):
                     "chunk_index": chunk_index
                 })
                 chunk_index += 1
-                
-                # Add a small delay to prevent overwhelming the client
-                await asyncio.sleep(0.05)
             
             # Send completion message
             await websocket.send_json({
@@ -450,9 +451,9 @@ async def stream_tts(websocket: WebSocket):
             logger.info(f"TTS streaming completed: {chunk_index} chunks sent")
             
     except asyncio.TimeoutError:
-        logger.warning(f"TTS session {session_id} timed out while waiting for input")
+        logger.warning(f"TTS session {session_id} timed out")
         await websocket.send_json({
-            "error": "Session timeout: waiting for input",
+            "error": "Session timeout",
             "type": "error"
         })
     except WebSocketDisconnect:
@@ -463,24 +464,17 @@ async def stream_tts(websocket: WebSocket):
             "error": "Invalid JSON data",
             "type": "error"
         })
-    except OpenAIError as e:
-        logger.error(f"OpenAI API error in TTS session {session_id}: {str(e)}")
-        await websocket.send_json({
-            "error": f"TTS service error: {str(e)}",
-            "type": "error"
-        })
     except Exception as e:
         logger.exception(f"Error in TTS streaming session {session_id}: {str(e)}")
         try:
             await websocket.send_json({
-                "error": f"Server error: {str(e)}",
+                "error": str(e),
                 "type": "error"
             })
         except:
             pass
     finally:
         logger.info(f"TTS streaming session ended: {session_id}")
-        # Ensure WebSocket is closed
         try:
             await websocket.close()
         except:

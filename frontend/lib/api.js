@@ -25,6 +25,7 @@ export const createReconnectingWebSocket = (url, options = {}) => {
     onError,
     onClose,
     onReconnect,
+    onMaxReconnectAttemptsExceeded,
     debug = false
   } = options;
   
@@ -92,6 +93,7 @@ export const createReconnectingWebSocket = (url, options = {}) => {
         }, delay);
       } else {
         log(`Max reconnect attempts (${maxReconnectAttempts}) reached`);
+        if (onMaxReconnectAttemptsExceeded) onMaxReconnectAttemptsExceeded();
       }
     };
   };
@@ -127,6 +129,7 @@ export const createReconnectingWebSocket = (url, options = {}) => {
   return api;
 };
 
+// Create our axios instance first
 const api = axios.create({
   baseURL: API_URL,
   headers: {
@@ -136,10 +139,58 @@ const api = axios.create({
   timeout: 30000, // Increased timeout from 10000ms to 30000ms (30 seconds)
 });
 
-// Log requests and responses for debugging
+// Auth API - putting this after api creation
+export const authApi = {
+  login: (username, password) => 
+    api.post('/auth/token', { username, password }),
+  
+  // Store token in localStorage
+  setToken: (token) => {
+    localStorage.setItem('auth_token', token);
+    // Update axios default headers
+    api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    console.log('Token set:', token.substring(0, 15) + '...');
+    console.log('Headers updated:', api.defaults.headers.common['Authorization']);
+  },
+  
+  // Remove token from localStorage
+  removeToken: () => {
+    localStorage.removeItem('auth_token');
+    delete api.defaults.headers.common['Authorization'];
+    console.log('Token removed');
+  },
+  
+  // Get stored token
+  getToken: () => {
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      console.log('Token retrieved from storage:', token.substring(0, 15) + '...');
+    }
+    return token;
+  }
+};
+
+// Initialize auth token from localStorage (if browser environment)
+if (typeof window !== 'undefined') {
+  const token = authApi.getToken();
+  if (token) {
+    console.log('Initializing API with token from localStorage');
+    api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+  } else {
+    console.log('No token found in localStorage during initialization');
+  }
+}
+
+// Add auth token to requests if available
 api.interceptors.request.use(
   request => {
-    console.log('API Request:', request.method, request.url);
+    const token = authApi.getToken();
+    if (token) {
+      request.headers['Authorization'] = `Bearer ${token}`;
+      console.log(`Request to ${request.url} includes auth token`);
+    } else {
+      console.log(`Request to ${request.url} has no auth token`);
+    }
     return request;
   },
   error => {

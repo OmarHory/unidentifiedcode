@@ -1,71 +1,141 @@
-# SpeakCode
+# SpeakCode API
 
-SpeakCode is a voice-first LLM-powered pair programming experience. It allows you to interact with your code using voice commands and receive intelligent suggestions from an AI assistant.
-
-## Project Structure
-
-The project is organized into two main components:
-
-- `backend/`: FastAPI backend for voice transcription, LLM integration, and file operations
-- `frontend/`: React/Next.js frontend for the user interface
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.9+
-- Node.js v16+
-- OpenAI API key (for LLM and voice services)
-- ElevenLabs API key (optional, for enhanced voice services)
-
-### Environment Setup
-
-1. Clone this repository
-2. Create a `.env` file in the root directory with the following variables:
-   ```
-   OPENAI_API_KEY=your_openai_api_key
-   ELEVENLABS_API_KEY=your_elevenlabs_api_key (optional)
-   ELEVENLABS_VOICE_ID=your_elevenlabs_voice_id (optional)
-   ```
-
-### Running the Application
-
-#### Start the Backend
-
-```bash
-./start-backend.sh
-```
-
-This will:
-- Set up a Python virtual environment
-- Install backend dependencies
-- Start the FastAPI server on port 8000
-
-#### Start the Frontend
-
-```bash
-./start-frontend.sh
-```
-
-This will:
-- Install frontend dependencies
-- Start the Next.js development server on port 3000
-
-#### Access the Application
-
-Open your browser and navigate to [http://localhost:3000](http://localhost:3000)
+Voice-first, LLM-powered pair-programming experience.
 
 ## Features
 
-- Voice-based code editing and navigation
-- AI-powered code suggestions and explanations
-- File management (create, edit, delete)
-- Real-time voice transcription
-- Streaming TTS for AI responses
+- Voice transcription using OpenAI Whisper
+- LLM-powered code assistance
+- Real-time chat with context awareness
+- File management and code diff generation
+- Session management with Redis
+- Rate limiting and authentication
+- Comprehensive API documentation
+
+## Prerequisites
+
+- Python 3.8+
+- Redis server
+- OpenAI API key
+- ElevenLabs API key (optional, for voice synthesis)
+
+## Setup
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/speakcode.git
+cd speakcode
+```
+
+2. Create and activate a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+3. Install dependencies:
+```bash
+pip install -r backend/requirements.txt
+```
+
+4. Create a `.env` file in the backend directory:
+```env
+# Application settings
+DEBUG=True
+SECRET_KEY=your-secret-key
+
+# API Keys
+OPENAI_API_KEY=your-openai-api-key
+ELEVENLABS_API_KEY=your-elevenlabs-api-key
+ELEVENLABS_VOICE_ID=your-voice-id
+
+# Redis settings
+REDIS_HOST=localhost
+REDIS_PORT=6379
+
+# Database settings
+DATABASE_URL=sqlite:///./speakcode.db
+```
+
+5. Start Redis server:
+```bash
+redis-server
+```
+
+6. Run the application:
+```bash
+cd backend
+uvicorn app.main:app --reload
+```
+
+The API will be available at `http://localhost:8000`
+
+## API Documentation
+
+Once the server is running, you can access the API documentation at:
+- Swagger UI: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
+
+## Authentication
+
+The API uses JWT-based authentication. To access protected endpoints:
+
+1. Get a JWT token by making a POST request to `/api/auth/token`
+2. Include the token in the Authorization header:
+```
+Authorization: Bearer your-jwt-token
+```
+
+## Rate Limiting
+
+The API implements rate limiting to prevent abuse:
+- 100 requests per minute per IP address
+- Applies to all endpoints except health checks
+- Returns 429 Too Many Requests when limit is exceeded
+
+## Caching
+
+Response caching is implemented for:
+- Chat completions
+- File contents
+- Project metadata
+
+Cache TTL is configurable in the settings.
 
 ## Development
 
-For detailed information about development:
+### Code Style
 
-- See [backend/README.md](backend/README.md) for backend development
-- See [frontend/README.md](frontend/README.md) for frontend development 
+The project uses:
+- Black for code formatting
+- isort for import sorting
+- flake8 for linting
+- mypy for type checking
+
+Run formatters:
+```bash
+black backend/
+isort backend/
+```
+
+Run linters:
+```bash
+flake8 backend/
+mypy backend/
+```
+
+### Testing
+
+Run tests:
+```bash
+pytest backend/tests/
+```
+
+With coverage:
+```bash
+pytest --cov=backend backend/tests/
+```
+
+## License
+
+MIT License - see LICENSE file for details 

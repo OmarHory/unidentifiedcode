@@ -2,6 +2,7 @@ import { Toaster } from 'react-hot-toast';
 import { ProjectProvider } from '../contexts/ProjectContext';
 import { ChatProvider } from '../contexts/ChatContext';
 import { DiffProvider } from '../contexts/DiffContext';
+import { AuthProvider } from '../contexts/AuthContext';
 import '../styles/globals.css';
 import { useEffect } from 'react';
 import logger from '../utils/logger';
@@ -20,14 +21,16 @@ function MyApp({ Component, pageProps }) {
 
   return (
     <ErrorBoundary>
-      <ProjectProvider>
-        <ChatProvider>
-          <DiffProvider>
-            <Component {...pageProps} />
-            <Toaster position="top-right" />
-          </DiffProvider>
-        </ChatProvider>
-      </ProjectProvider>
+      <AuthProvider>
+        <ProjectProvider>
+          <ChatProvider>
+            <DiffProvider>
+              <Component {...pageProps} />
+              <Toaster position="top-right" />
+            </DiffProvider>
+          </ChatProvider>
+        </ProjectProvider>
+      </AuthProvider>
     </ErrorBoundary>
   );
 }

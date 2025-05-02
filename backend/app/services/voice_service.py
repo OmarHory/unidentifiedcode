@@ -4,15 +4,21 @@ import tempfile
 import requests
 import json
 from typing import Dict, Any, Optional, AsyncGenerator
+import asyncio
+import websockets
+from app.core.config import settings
+from app.core.logger import logger
 
 from openai import OpenAI
-from app.core.config import settings
 
 class VoiceService:
     def __init__(self):
         self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
         self.elevenlabs_api_key = settings.ELEVENLABS_API_KEY
         self.elevenlabs_voice_id = settings.ELEVENLABS_VOICE_ID
+        
+        if not self.elevenlabs_api_key:
+            raise ValueError("ElevenLabs API key is not configured")
     
     async def transcribe_audio(self, audio_data: str) -> Dict[str, Any]:
         """
@@ -34,37 +40,91 @@ class VoiceService:
             audio_data = audio_data.split(';base64,')[1]
             
         try:
+            # Check if we're in development mode or OpenAI API key is missing
+            if settings.ENVIRONMENT == "development" and not settings.OPENAI_API_KEY:
+                logger.info("Using simulated transcription in development mode")
+                return self._simulate_transcription(audio_data)
+                
             # Create a temporary file to store the audio
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-                temp_file_path = temp_file.name
-                
+            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as temp_file:
                 # Decode base64 to binary
-                audio_binary = base64.b64decode(audio_data)
+                binary_data = base64.b64decode(audio_data)
                 
-                # Write to the temporary file
-                temp_file.write(audio_binary)
+                # Write binary data to file
+                temp_file.write(binary_data)
+                temp_filename = temp_file.name
             
-            # Transcribe using OpenAI Whisper API
-            with open(temp_file_path, "rb") as audio_file:
-                transcript = self.client.audio.transcriptions.create(
+            # Create a file object from the temporary file
+            audio_file = open(temp_filename, "rb")
+            
+            try:
+                # Transcribe using OpenAI Whisper
+                client = OpenAI(api_key=settings.OPENAI_API_KEY)
+                response = client.audio.transcriptions.create(
                     model="whisper-1",
-                    file=audio_file
+                    file=audio_file,
                 )
-            
-            # Clean up temporary file
-            os.remove(temp_file_path)
-            
-            return {
-                "text": transcript.text,
-                "confidence": 0.95  # OpenAI doesn't provide confidence scores
-            }
-            
+                
+                # Delete the temporary file
+                audio_file.close()
+                os.unlink(temp_filename)
+                
+                # Return the transcription
+                return {
+                    "text": response.text,
+                    "confidence": 0.95  # Whisper doesn't return confidence, using default
+                }
+            finally:
+                # Ensure file is closed
+                audio_file.close()
+                
         except Exception as e:
-            # Clean up temporary file if it exists
-            if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
+            logger.exception(f"Error transcribing audio: {str(e)}")
             
-            raise Exception(f"Error transcribing audio: {str(e)}")
+            # Fall back to simulation in development mode if there was an error
+            if settings.ENVIRONMENT == "development":
+                logger.info("Falling back to simulated transcription due to error")
+                return self._simulate_transcription(audio_data)
+                
+            raise ValueError(f"Error transcribing audio: {str(e)}")
+    
+    def _simulate_transcription(self, audio_data: str) -> Dict[str, Any]:
+        """
+        Simulate a transcription for development purposes
+        
+        Args:
+            audio_data: Base64 encoded audio data (not used, but kept for consistency)
+            
+        Returns:
+            Dict containing simulated transcription text and confidence
+        """
+        # Simulate audio duration based on data size
+        audio_size = len(audio_data)
+        audio_duration = audio_size / 50000  # Rough approximation
+        
+        # Generate more intelligent sample phrases based on data size
+        phrases = [
+            "Hello, can you help me with this code?",
+            "I need to implement a feature for user authentication.",
+            "How do I fix this error message?",
+            "Write a function to process this data.",
+            "Create a component that displays a user profile.",
+            "What's the best way to handle API requests?",
+            "Explain how this algorithm works.",
+            "I want to improve the performance of this query."
+        ]
+        
+        # Randomly select a phrase based on the "seed" from audio data size
+        seed = sum(ord(c) for c in audio_data[:20]) % len(phrases)
+        selected_phrase = phrases[seed]
+        
+        logger.info(f"Generated simulated transcription: {selected_phrase}")
+        
+        return {
+            "text": selected_phrase,
+            "confidence": 0.98,
+            "simulated": True
+        }
     
     async def elevenlabs_transcribe(self, audio_data: str) -> Dict[str, Any]:
         """
@@ -349,4 +409,111 @@ class VoiceService:
         
         except Exception as e:
             print(f"Error in TTS streaming: {str(e)}")
-            raise e 
+            raise e
+
+    async def transcribe_streaming(self, websocket) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Stream audio transcription using ElevenLabs ASR
+        
+        Args:
+            websocket: WebSocket connection for streaming audio
+            
+        Yields:
+            Dict containing transcription text and metadata
+        """
+        try:
+            # ElevenLabs ASR WebSocket URL
+            ws_url = f"wss://api.elevenlabs.io/v1/speech-to-text/stream"
+            
+            async with websockets.connect(
+                ws_url,
+                extra_headers={"xi-api-key": self.elevenlabs_api_key}
+            ) as elevenlabs_ws:
+                # Forward audio chunks to ElevenLabs
+                while True:
+                    try:
+                        # Receive audio chunk from client
+                        message = await websocket.receive_json()
+                        
+                        if "audio_chunk" in message:
+                            # Forward the chunk to ElevenLabs
+                            await elevenlabs_ws.send(
+                                json.dumps({
+                                    "audio": message["audio_chunk"],
+                                    "type": "audio_data"
+                                })
+                            )
+                            
+                            # Get transcription result
+                            result = await elevenlabs_ws.recv()
+                            result_data = json.loads(result)
+                            
+                            # Yield the result
+                            yield {
+                                "text": result_data.get("text", ""),
+                                "is_final": result_data.get("is_final", False),
+                                "confidence": result_data.get("confidence", 0)
+                            }
+                            
+                    except websockets.exceptions.ConnectionClosed:
+                        logger.warning("ElevenLabs ASR WebSocket connection closed")
+                        break
+                        
+        except Exception as e:
+            logger.error(f"Error in ASR streaming: {str(e)}")
+            yield {"error": str(e), "is_final": True}
+    
+    async def text_to_speech_streaming(self, text: str, voice_id: Optional[str] = None) -> AsyncGenerator[bytes, None]:
+        """
+        Stream text-to-speech using ElevenLabs
+        
+        Args:
+            text: Text to convert to speech
+            voice_id: ElevenLabs voice ID (defaults to settings)
+            
+        Yields:
+            Audio chunks as bytes
+        """
+        try:
+            # Use configured voice ID if none provided
+            voice_id = voice_id or self.elevenlabs_voice_id
+            
+            # ElevenLabs TTS streaming endpoint
+            url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
+            
+            headers = {
+                "xi-api-key": self.elevenlabs_api_key,
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "text": text,
+                "model_id": "eleven_monolingual_v1",
+                "voice_settings": {
+                    "stability": 0.5,
+                    "similarity_boost": 0.75
+                },
+                "optimize_streaming_latency": 3
+            }
+            
+            # Stream the response
+            async with requests.post(url, headers=headers, json=data, stream=True) as response:
+                if response.status_code != 200:
+                    raise Exception(f"ElevenLabs TTS API error: {response.text}")
+                
+                # Process the audio stream in chunks
+                for chunk in response.iter_content(chunk_size=1024):
+                    if chunk:
+                        # Convert chunk to base64 for WebSocket transmission
+                        chunk_base64 = base64.b64encode(chunk).decode("utf-8")
+                        yield chunk_base64
+                        
+                        # Add a small delay to prevent overwhelming the client
+                        await asyncio.sleep(0.05)
+                        
+        except Exception as e:
+            logger.error(f"Error in TTS streaming: {str(e)}")
+            raise
+
+# Create global voice service instance
+voice_service = VoiceService() 
