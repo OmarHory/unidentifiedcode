@@ -18,41 +18,71 @@ export function ChatProvider({ children }) {
 
   const { isAuthenticated } = useAuth();
 
-  // Load session ID from localStorage on mount, but only if authenticated
+  // When current project changes, load or create a chat session for that project
   useEffect(() => {
-    if (isAuthenticated()) {
-      const storedSessionId = localStorage.getItem('chatSessionId');
+    if (isAuthenticated() && currentProject) {
+      // Try to get the last used session ID for this project from localStorage
+      const projectSessionKey = `project_${currentProject.id}_session`;
+      const storedSessionId = localStorage.getItem(projectSessionKey);
+      
       if (storedSessionId) {
+        // If we have a stored session ID for this project, try to load it
         setSessionId(storedSessionId);
         loadChatSession(storedSessionId);
       } else {
-        // Create a new session ID
-        const newSessionId = uuidv4();
-        setSessionId(newSessionId);
-        localStorage.setItem('chatSessionId', newSessionId);
+        // No stored session for this project, create a new one
+        createChatSession(currentProject.id);
       }
     } else {
-      // Clear any existing chat session if not authenticated
-      localStorage.removeItem('chatSessionId');
+      // No authentication or no project selected
       setSessionId(null);
       setMessages([]);
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, currentProject]);
 
+  // Create a new chat session for a project
+  async function createChatSession(projectId, name = 'New Chat') {
+    if (!projectId) return;
+    
+    try {
+      const response = await chatApi.createSession(projectId, name);
+      const newSessionId = response.data.id;
+      
+      // Store the session ID for this project
+      const projectSessionKey = `project_${projectId}_session`;
+      localStorage.setItem(projectSessionKey, newSessionId);
+      
+      setSessionId(newSessionId);
+      setMessages([]);
+      
+      return newSessionId;
+    } catch (err) {
+      console.error('Error creating chat session:', err);
+      setError(err.message || 'Failed to create chat session');
+    }
+  }
+  
   // Load chat messages when session ID changes
   async function loadChatSession(sid) {
     if (!sid) return;
     
     try {
       const response = await chatApi.getSession(sid);
-      setMessages(response.data);
+      
+      // The API now returns a structured response with messages array
+      if (response.data && response.data.messages) {
+        setMessages(response.data.messages);
+      } else {
+        setMessages([]);
+      }
     } catch (err) {
       console.error('Error loading chat session:', err);
-      // If session not found, create a new one
-      if (err.response && err.response.status === 404) {
-        const newSessionId = uuidv4();
-        setSessionId(newSessionId);
-        localStorage.setItem('chatSessionId', newSessionId);
+      
+      // If session not found and we have a current project, create a new one
+      if (err.response && err.response.status === 404 && currentProject) {
+        createChatSession(currentProject.id);
+      } else {
+        setError(err.message || 'Failed to load chat session');
       }
     }
   }
@@ -170,11 +200,13 @@ export function ChatProvider({ children }) {
       }
     }
     
-    // Create a new session
-    const newSessionId = uuidv4();
-    setSessionId(newSessionId);
-    localStorage.setItem('chatSessionId', newSessionId);
-    setMessages([]);
+    // Create a new session if we have a current project
+    if (currentProject) {
+      createChatSession(currentProject.id);
+    } else {
+      setSessionId(null);
+      setMessages([]);
+    }
   }
 
   return (
@@ -192,6 +224,8 @@ export function ChatProvider({ children }) {
         transcribeAudio,
         textToSpeech,
         clearChat,
+        createChatSession,
+        loadChatSession
       }}
     >
       {children}

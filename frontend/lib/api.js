@@ -311,10 +311,19 @@ export const projectsApi = {
 
 // Chat API
 export const chatApi = {
+  // Session management
+  createSession: (projectId, name) => 
+    api.post('/chat/sessions', { project_id: projectId, name }),
+  listSessions: (projectId) => 
+    api.get('/chat/sessions', { params: projectId ? { project_id: projectId } : {} }),
+  getSession: (sessionId) => 
+    api.get(`/chat/sessions/${sessionId}`),
+  deleteSession: (sessionId) => 
+    api.delete(`/chat/sessions/${sessionId}`),
+    
+  // Chat messages
   sendMessage: (messages, sessionId, projectContext) => 
     api.post('/chat/completions', { messages, session_id: sessionId, project_context: projectContext }),
-  getSession: (sessionId) => api.get(`/chat/sessions/${sessionId}`),
-  deleteSession: (sessionId) => api.delete(`/chat/sessions/${sessionId}`),
 };
 
 // Voice API
