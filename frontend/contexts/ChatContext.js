@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { chatApi, voiceApi } from '../lib/api';
 import { useProject } from './ProjectContext';
+import { useAuth } from './AuthContext';
 
 const ChatContext = createContext();
 
@@ -15,19 +16,28 @@ export function ChatProvider({ children }) {
   const mediaRecorderRef = useRef(null);
   const { currentProject } = useProject();
 
-  // Load session ID from localStorage on mount
+  const { isAuthenticated } = useAuth();
+
+  // Load session ID from localStorage on mount, but only if authenticated
   useEffect(() => {
-    const storedSessionId = localStorage.getItem('chatSessionId');
-    if (storedSessionId) {
-      setSessionId(storedSessionId);
-      loadChatSession(storedSessionId);
+    if (isAuthenticated()) {
+      const storedSessionId = localStorage.getItem('chatSessionId');
+      if (storedSessionId) {
+        setSessionId(storedSessionId);
+        loadChatSession(storedSessionId);
+      } else {
+        // Create a new session ID
+        const newSessionId = uuidv4();
+        setSessionId(newSessionId);
+        localStorage.setItem('chatSessionId', newSessionId);
+      }
     } else {
-      // Create a new session ID
-      const newSessionId = uuidv4();
-      setSessionId(newSessionId);
-      localStorage.setItem('chatSessionId', newSessionId);
+      // Clear any existing chat session if not authenticated
+      localStorage.removeItem('chatSessionId');
+      setSessionId(null);
+      setMessages([]);
     }
-  }, []);
+  }, [isAuthenticated]);
 
   // Load chat messages when session ID changes
   async function loadChatSession(sid) {
