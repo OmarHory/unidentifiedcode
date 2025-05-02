@@ -30,13 +30,14 @@ export function AuthProvider({ children }) {
       const response = await authApi.login(username, password);
       
       console.log('Login response:', response.data);
-      const { access_token } = response.data;
+      // The backend returns { token, user } instead of { access_token }
+      const { token, user: userData } = response.data;
       
       // Store the token
-      authApi.setToken(access_token);
+      authApi.setToken(token);
       
-      // Set the user
-      setUser({ username });
+      // Set the user with data from response
+      setUser(userData || { username });
       return true;
     } catch (err) {
       console.error('Login error:', err);
