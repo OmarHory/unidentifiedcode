@@ -1,48 +1,66 @@
-from fastapi import APIRouter, HTTPException, Body, Query, status
+from fastapi import APIRouter, HTTPException, Body, Query, status, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update, delete
 from typing import List, Optional
 from app.core.logger import logger
+from app.core.database import get_db
+from app.core.auth import get_current_user
 
-from app.models.ide import Project, ProjectFile, FileContent, FileListResponse, FileOperation
-from app.services.ide_service import IDEService
+from app.models.project import Project
+from app.models.file import File
+from app.models.user import User
+from app.api.models import ProjectCreate, ProjectResponse, FileResponse, FileListResponse, FileOperation
 
 router = APIRouter()
 
-# Initialize services
-ide_service = IDEService()
-
-@router.post("/projects", response_model=Project)
+@router.post("/projects", response_model=ProjectResponse)
 async def create_project(
-    name: str = Body(..., embed=True),
-    description: str = Body("", embed=True),
-    technology: str = Body("", embed=True)
+    project: ProjectCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Create a new project
     """
     try:
-        project = ide_service.create_project(name, description, technology)
-        logger.info(f"Created project via API: {project.id} - {name}")
-        return project
-    except ValueError as e:
-        logger.error(f"Value error creating project: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid project data: {str(e)}"
+        new_project = Project(
+            name=project.name,
+            description=project.description,
+            technology=project.technology,
+            meta_data=project.metadata,
+            owner_id=current_user.id
         )
+        db.add(new_project)
+        await db.commit()
+        await db.refresh(new_project)
+        
+        logger.info(f"Created project via API: {new_project.id} - {project.name}")
+        return new_project
     except Exception as e:
         logger.exception(f"Error creating project: {str(e)}")
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating project: {str(e)}"
         )
 
-@router.get("/projects/{project_id}", response_model=Project)
-async def get_project(project_id: str):
+@router.get("/projects/{project_id}", response_model=ProjectResponse)
+async def get_project(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Get project details
     """
     try:
-        project = ide_service.get_project(project_id)
+        result = await db.execute(
+            select(Project)
+            .where(Project.id == project_id)
+            .where(Project.owner_id == current_user.id)
+        )
+        project = result.scalar_one_or_none()
+        
         if not project:
             logger.warning(f"Project not found in API request: {project_id}")
             raise HTTPException(
@@ -52,20 +70,31 @@ async def get_project(project_id: str):
         
         return project
     except Exception as e:
-        logger.exception(f"Unexpected error retrieving project {project_id}: {str(e)}")
+        logger.exception(f"Error retrieving project: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving project: {str(e)}"
         )
 
 @router.get("/projects/{project_id}/files", response_model=FileListResponse)
-async def list_files(project_id: str, path: str = "/"):
+async def list_files(
+    project_id: str,
+    path: str = "/",
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     List files in a project
     """
     try:
-        # Validate project ID
-        project = ide_service.get_project(project_id)
+        # Validate project ID and ownership
+        result = await db.execute(
+            select(Project)
+            .where(Project.id == project_id)
+            .where(Project.owner_id == current_user.id)
+        )
+        project = result.scalar_one_or_none()
+        
         if not project:
             logger.warning(f"Project not found when listing files: {project_id}")
             raise HTTPException(
@@ -74,14 +103,14 @@ async def list_files(project_id: str, path: str = "/"):
             )
             
         # Get files
-        files = ide_service.list_files(project_id, path)
-        return FileListResponse(files=files)
-    except ValueError as e:
-        logger.error(f"Value error listing files for project {project_id}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+        result = await db.execute(
+            select(File)
+            .where(File.project_id == project_id)
+            .where(File.path.startswith(path))
         )
+        files = result.scalars().all()
+        
+        return FileListResponse(files=files)
     except Exception as e:
         logger.exception(f"Error listing files for project {project_id}: {str(e)}")
         raise HTTPException(
@@ -89,101 +118,187 @@ async def list_files(project_id: str, path: str = "/"):
             detail=f"Error listing files: {str(e)}"
         )
 
-@router.get("/projects/{project_id}/files/{file_path:path}", response_model=FileContent)
-async def get_file_content(project_id: str, file_path: str):
+@router.get("/projects/{project_id}/files/{file_path:path}", response_model=FileResponse)
+async def get_file_content(
+    project_id: str,
+    file_path: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Get file content
     """
     try:
-        # Validate project first
-        project = ide_service.get_project(project_id)
+        # Validate project ownership
+        result = await db.execute(
+            select(Project)
+            .where(Project.id == project_id)
+            .where(Project.owner_id == current_user.id)
+        )
+        project = result.scalar_one_or_none()
+        
         if not project:
             logger.warning(f"Project not found when getting file content: {project_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Project not found: {project_id}"
             )
-            
-        file_content = ide_service.read_file(project_id, file_path)
-        if not file_content:
+        
+        # Get file
+        result = await db.execute(
+            select(File)
+            .where(File.project_id == project_id)
+            .where(File.path == file_path)
+        )
+        file = result.scalar_one_or_none()
+        
+        if not file:
             logger.warning(f"File not found: {file_path} in project {project_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"File not found: {file_path}"
             )
         
-        return file_content
-    except ValueError as e:
-        logger.error(f"Value error reading file {file_path} from project {project_id}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+        return file
     except Exception as e:
-        logger.exception(f"Error reading file {file_path} from project {project_id}: {str(e)}")
+        logger.exception(f"Error reading file {file_path} in project {project_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error reading file: {str(e)}"
         )
 
-@router.put("/projects/{project_id}/files/{file_path:path}", response_model=FileContent)
+@router.put("/projects/{project_id}/files/{file_path:path}", response_model=FileResponse)
 async def update_file_content(
     project_id: str,
     file_path: str,
-    content: str = Body(..., embed=True)
+    content: str = Body(..., embed=True),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Update file content
     """
     try:
-        file_content = ide_service.write_file(project_id, file_path, content)
-        return file_content
-    except ValueError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=str(e)
+        # Validate project ownership
+        result = await db.execute(
+            select(Project)
+            .where(Project.id == project_id)
+            .where(Project.owner_id == current_user.id)
         )
+        project = result.scalar_one_or_none()
+        
+        if not project:
+            logger.warning(f"Project not found when updating file content: {project_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+        
+        # Get file
+        result = await db.execute(
+            select(File)
+            .where(File.project_id == project_id)
+            .where(File.path == file_path)
+        )
+        file = result.scalar_one_or_none()
+        
+        if not file:
+            logger.warning(f"File not found: {file_path} in project {project_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"File not found: {file_path}"
+            )
+        
+        # Update file content
+        file.content = content
+        await db.commit()
+        
+        return file
     except Exception as e:
+        logger.exception(f"Error updating file {file_path} in project {project_id}: {str(e)}")
+        await db.rollback()
         raise HTTPException(
-            status_code=500,
-            detail=f"Error writing file: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating file: {str(e)}"
         )
 
 @router.delete("/projects/{project_id}/files/{file_path:path}")
-async def delete_file(project_id: str, file_path: str):
+async def delete_file(
+    project_id: str,
+    file_path: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Delete a file
     """
     try:
-        success = ide_service.delete_file(project_id, file_path)
-        if not success:
+        # Validate project ownership
+        result = await db.execute(
+            select(Project)
+            .where(Project.id == project_id)
+            .where(Project.owner_id == current_user.id)
+        )
+        project = result.scalar_one_or_none()
+        
+        if not project:
+            logger.warning(f"Project not found when deleting file: {project_id}")
             raise HTTPException(
-                status_code=404,
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {project_id}"
+            )
+        
+        # Get file
+        result = await db.execute(
+            select(File)
+            .where(File.project_id == project_id)
+            .where(File.path == file_path)
+        )
+        file = result.scalar_one_or_none()
+        
+        if not file:
+            logger.warning(f"File not found: {file_path} in project {project_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"File not found: {file_path}"
             )
         
-        return {"status": "success"}
-    except ValueError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=str(e)
+        # Delete file
+        await db.execute(
+            delete(File)
+            .where(File.project_id == project_id)
+            .where(File.path == file_path)
         )
+        await db.commit()
+        
+        return {"status": "success"}
     except Exception as e:
+        logger.exception(f"Error deleting file {file_path} in project {project_id}: {str(e)}")
+        await db.rollback()
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error deleting file: {str(e)}"
         )
 
 @router.post("/projects/{project_id}/files")
-async def operate_on_file(project_id: str, operation: FileOperation = Body(...)):
+async def operate_on_file(
+    project_id: str,
+    operation: FileOperation,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Perform operations on files (create, update, delete)
     """
-    print(f"Received file operation: {operation.dict()}")
-    
     try:
-        # Validate project exists
-        project = ide_service.get_project(project_id)
+        # Validate project ownership
+        result = await db.execute(
+            select(Project)
+            .where(Project.id == project_id)
+            .where(Project.owner_id == current_user.id)
+        )
+        project = result.scalar_one_or_none()
+        
         if not project:
             raise HTTPException(
                 status_code=404,
@@ -205,7 +320,7 @@ async def operate_on_file(project_id: str, operation: FileOperation = Body(...))
                 detail="File path is required"
             )
         
-        if operation.operation == "create" or operation.operation == "update":
+        if operation.operation in ["create", "update"]:
             # For create/update operations, content can be empty string but not None
             if operation.content is None:
                 raise HTTPException(
@@ -213,11 +328,42 @@ async def operate_on_file(project_id: str, operation: FileOperation = Body(...))
                     detail="Content is required for create/update operations (can be empty string)"
                 )
             
-            file_content = ide_service.write_file(
-                project_id,
-                operation.path,
-                operation.content
+            # Check if file exists
+            result = await db.execute(
+                select(File)
+                .where(File.project_id == project_id)
+                .where(File.path == operation.path)
             )
+            existing_file = result.scalar_one_or_none()
+            
+            if operation.operation == "create" and existing_file:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File already exists: {operation.path}"
+                )
+            
+            if operation.operation == "update" and not existing_file:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"File not found: {operation.path}"
+                )
+            
+            if existing_file:
+                # Update
+                existing_file.content = operation.content
+                await db.commit()
+                file = existing_file
+            else:
+                # Create
+                file = File(
+                    project_id=project_id,
+                    path=operation.path,
+                    name=operation.path.split("/")[-1],
+                    type="file",  # You might want to determine this based on extension
+                    content=operation.content
+                )
+                db.add(file)
+                await db.commit()
             
             return {
                 "status": "success",
@@ -226,13 +372,21 @@ async def operate_on_file(project_id: str, operation: FileOperation = Body(...))
             }
         
         elif operation.operation == "delete":
-            success = ide_service.delete_file(project_id, operation.path)
+            result = await db.execute(
+                delete(File)
+                .where(File.project_id == project_id)
+                .where(File.path == operation.path)
+                .returning(File.id)
+            )
+            deleted = result.scalar_one_or_none()
             
-            if not success:
+            if not deleted:
                 raise HTTPException(
                     status_code=404,
                     detail=f"File not found: {operation.path}"
                 )
+            
+            await db.commit()
             
             return {
                 "status": "success",
@@ -240,16 +394,13 @@ async def operate_on_file(project_id: str, operation: FileOperation = Body(...))
                 "path": operation.path
             }
     
-    except ValueError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=str(e)
-        )
+    except HTTPException:
+        await db.rollback()
+        raise
     except Exception as e:
-        # Log more details about the error for debugging
-        import traceback
-        traceback.print_exc()
+        await db.rollback()
+        logger.exception(f"Error performing file operation: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Error performing file operation: {str(e)}"
-        ) 
+        )
