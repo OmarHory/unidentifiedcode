@@ -13,8 +13,14 @@ from app.models.chat_models import ChatSession, ChatMessage
 from app.models.user import User
 from app.models.project import Project
 from app.models.chat import MessageRole, MessageType
+from app.services.llm_service import llm_service
+from app.services.ide_service import IDEService
+from app.core.cache import cache
 
 router = APIRouter()
+
+# Initialize services
+ide_service = IDEService()
 
 class Message(BaseModel):
     role: str
@@ -275,6 +281,7 @@ async def chat_completion(
     """
     try:
         # Validate project if context provided
+        project_context = None
         if request.project_context:
             result = await db.execute(
                 select(Project)
@@ -287,6 +294,15 @@ async def chat_completion(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Project not found: {request.project_context.project_id}"
                 )
+                
+            # Get project context for LLM
+            project_context = {
+                "project_id": project.id,
+                "name": project.name,
+                "technology": project.technology,
+                "description": project.description,
+                "current_file": request.project_context.file_path if request.project_context.file_path else None
+            }
 
         # Get or create chat session
         result = await db.execute(
@@ -304,36 +320,97 @@ async def chat_completion(
             )
             db.add(session)
             await db.commit()
-
-        # Create message
-        message = ChatMessage(
-            id=str(uuid.uuid4()),
+            
+        # Get existing messages from the database
+        existing_messages_result = await db.execute(
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session.id)
+            .order_by(ChatMessage.created_at)
+        )
+        existing_messages = existing_messages_result.scalars().all()
+        
+        # Convert to the format expected by LLM service
+        llm_messages = []
+        for msg in existing_messages:
+            llm_messages.append({
+                "id": msg.id,
+                "role": MessageRole(msg.role),
+                "content": msg.content
+            })
+            
+        # Add the new user message
+        user_message_id = str(uuid.uuid4())
+        user_message = ChatMessage(
+            id=user_message_id,
             session_id=session.id,
             role="user",
             content_type="text",
             content=request.messages[-1].content
         )
-        db.add(message)
+        db.add(user_message)
         await db.commit()
+        
+        # Add to LLM messages
+        llm_messages.append({
+            "id": user_message_id,
+            "role": MessageRole.USER,
+            "content": request.messages[-1].content
+        })
+        
+        # Try to get cached response for the exact same conversation
+        cache_key = f"chat_completion:{session.id}:{hash(str(llm_messages))}"
+        cached_response = await cache.get(cache_key) if cache else None
+        
+        if cached_response:
+            return cached_response
+        
+        # Generate response using LLM service
+        try:
+            response_message = await llm_service.generate_completion(llm_messages, project_context)
+            
+            # Save the assistant response to the database
+            assistant_message = ChatMessage(
+                id=response_message.id,
+                session_id=session.id,
+                role="assistant",
+                content_type="text",
+                content=response_message.content
+            )
+            db.add(assistant_message)
+            await db.commit()
+            
+            # Prepare the response
+            response = {
+                "id": response_message.id,
+                "role": "assistant",
+                "content": response_message.content
+            }
+            
+            # Cache the response if cache is available
+            if cache:
+                await cache.set(cache_key, response, 3600)  # Cache for 1 hour
+            
+            return response
+            
+        except Exception as llm_error:
+            logger.error(f"Error generating LLM completion: {str(llm_error)}")
+            # Fallback to a simple echo response
+            response_id = str(uuid.uuid4())
+            response = ChatMessage(
+                id=response_id,
+                session_id=session.id,
+                role="assistant",
+                content_type="text",
+                content=f"I'm sorry, I encountered an error processing your request: {str(llm_error)}"
+            )
+            db.add(response)
+            await db.commit()
 
-        # TODO: Implement actual chat completion logic here
-        # For now, just echo back the message
-        response_id = str(uuid.uuid4())
-        response = ChatMessage(
-            id=response_id,
-            session_id=session.id,
-            role="assistant",
-            content_type="text",
-            content=f"Echo: {request.messages[-1].content}"
-        )
-        db.add(response)
-        await db.commit()
-
-        return {
-            "id": response_id,
-            "role": "assistant",
-            "content": response.content
-        }
+            return {
+                "id": response_id,
+                "role": "assistant",
+                "content": response.content
+            }
 
     except Exception as e:
         await db.rollback()

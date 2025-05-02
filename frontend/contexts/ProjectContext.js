@@ -11,42 +11,48 @@ export function ProjectProvider({ children }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Load projects from localStorage on mount
+  // Load projects from API when user is authenticated
   useEffect(() => {
-    const storedProjects = localStorage.getItem('projects');
-    if (storedProjects) {
-      try {
-        setProjects(JSON.parse(storedProjects));
-      } catch (e) {
-        console.error('Error parsing stored projects:', e);
-      }
-    }
-
-    const lastProjectId = localStorage.getItem('currentProjectId');
-    if (lastProjectId) {
-      loadProject(lastProjectId).catch(err => {
-        console.error('Failed to load last project:', err);
-        // Clear invalid project ID from localStorage
-        if (err.response && err.response.status === 404) {
-          localStorage.removeItem('currentProjectId');
-        }
-      });
+    // Check if we have an auth token (user is logged in)
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      fetchProjects();
     }
   }, []);
-
-  // Save projects to localStorage when they change
-  useEffect(() => {
-    if (projects.length > 0) {
-      localStorage.setItem('projects', JSON.stringify(projects));
+  
+  // Fetch all projects from the API
+  async function fetchProjects() {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await projectsApi.list();
+      if (response.data) {
+        // The backend returns an array of projects directly
+        if (Array.isArray(response.data)) {
+          setProjects(response.data);
+        } 
+        // Handle the case where the response might have a projects property
+        else if (response.data.projects && Array.isArray(response.data.projects)) {
+          setProjects(response.data.projects);
+        } else {
+          console.error('Unexpected API response format:', response.data);
+          setError('Unexpected API response format');
+        }
+      } else {
+        setProjects([]);
+      }
+    } catch (err) {
+      console.error('Error fetching projects:', err);
+      setError(err.message || 'Error fetching projects');
+    } finally {
+      setLoading(false);
     }
-  }, [projects]);
+  }
 
-  // Save current project ID to localStorage
-  useEffect(() => {
-    if (currentProject) {
-      localStorage.setItem('currentProjectId', currentProject.id);
-    }
-  }, [currentProject]);
+  // No need to save projects to localStorage anymore
+  // They are stored in the database and fetched from API
+
+  // No need to save current project ID to localStorage anymore
 
   async function createProject(name, metadata = {}) {
     setLoading(true);
@@ -259,6 +265,7 @@ export function ProjectProvider({ children }) {
         deleteFile,
         setCurrentFile,
         setProjects,
+        fetchProjects
       }}
     >
       {children}

@@ -1,15 +1,28 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { MicrophoneIcon, PaperAirplaneIcon, StopIcon, SparklesIcon } from '@heroicons/react/24/outline';
+import { MicrophoneIcon, PaperAirplaneIcon, StopIcon, SparklesIcon, ArrowPathIcon, PlusIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { chatApi, getWebSocketBaseUrl, createReconnectingWebSocket } from '../lib/api';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useChat } from '../contexts/ChatContext';
 
 export default function ChatInterface({ projectId, onCodeSuggestion }) {
-  const [messages, setMessages] = useState([]);
+  // Use the chat context instead of local state
+  const { 
+    messages, 
+    sessionId, 
+    chatSessions,
+    loadChatSessions,
+    createChatSession,
+    loadChatSession,
+    setSessionId,
+    sendMessage: sendChatMessage,
+    isProcessing: isApiProcessing
+  } = useChat();
+  
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [sessionId, setSessionId] = useState(null);
+  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const chatContainerRef = useRef(null);
   const wsRef = useRef(null);
 
@@ -47,43 +60,22 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
     };
   }, []);
 
-  // Initialize WebSocket connection and session
+  // Load chat sessions for this project when the component mounts
   useEffect(() => {
-    // Check if we have a session ID in localStorage
-    const storedSessionId = localStorage.getItem(`chat_session_${projectId}`);
-    let currentSessionId;
-    
-    if (storedSessionId) {
-      currentSessionId = storedSessionId;
-      setSessionId(storedSessionId);
-      
-      // Try to load previous messages
-      const loadSession = async () => {
-        try {
-          const response = await chatApi.getSession(storedSessionId);
-          if (response.data && Array.isArray(response.data)) {
-            setMessages(response.data);
-          }
-        } catch (error) {
-          console.error('Error loading chat session:', error);
-          // Generate a new session ID if we couldn't load the previous one
-          currentSessionId = `session_${Date.now()}`;
-          setSessionId(currentSessionId);
-          localStorage.setItem(`chat_session_${projectId}`, currentSessionId);
-        }
-      };
-      
-      loadSession();
-    } else {
-      // Create new session ID
-      currentSessionId = `session_${Date.now()}`;
-      setSessionId(currentSessionId);
-      localStorage.setItem(`chat_session_${projectId}`, currentSessionId);
+    if (projectId) {
+      setIsLoadingSessions(true);
+      loadChatSessions(projectId)
+        .finally(() => setIsLoadingSessions(false));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]); // Removed loadChatSessions from deps to prevent infinite calls
+  
+  // Set up WebSocket connection when session ID changes
+  useEffect(() => {
+    if (!sessionId) return;
     
-    // Set up WebSocket connection with the updated URL format
     const wsBaseUrl = getWebSocketBaseUrl();
-    const wsUrl = `${wsBaseUrl}/chat/ws/${currentSessionId}`;
+    const wsUrl = `${wsBaseUrl}/chat/ws/${sessionId}`;
     console.log('Connecting to WebSocket URL:', wsUrl);
     
     // Use the enhanced WebSocket with reconnection
@@ -189,74 +181,46 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
     }
   }, [messages]);
 
-  const handleSendMessage = async () => {
-    if (!localInputMessage.trim()) return;
+  async function handleSendMessage() {
+    if (!inputMessage.trim()) return;
     
-    const userMessage = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: localInputMessage,
-    };
-    
-    // Add message to UI immediately
-    setMessages(prev => [...prev, userMessage]);
+    // Clear the input field immediately for better UX
+    const messageContent = inputMessage.trim();
     setLocalInputMessage('');
     setInputMessage('');
-    
-    // Send message via WebSocket if connected
-    if (wsRef.current && wsRef.current.getState() === WebSocket.OPEN) {
-      try {
-        wsRef.current.send({
-          message: userMessage,
-          project_id: projectId
-        });
-        setIsLoading(true);
-      } catch (error) {
-        console.error('Error sending message via WebSocket:', error);
-        fallbackToRestApi(userMessage);
-      }
-    } else {
-      // Fallback to REST API if WebSocket is not connected
-      fallbackToRestApi(userMessage);
-    }
-  };
-  
-  // Fallback to REST API if WebSocket connection fails
-  const fallbackToRestApi = async (userMessage) => {
     setIsLoading(true);
     
-    try {
-      // Prepare chat messages for API
-      const chatMessages = [
-        ...messages.map(msg => ({
-          role: msg.role,
-          content: msg.content
-        })),
-        { role: 'user', content: userMessage.content }
-      ];
-      
-      // Include project context
-      const projectContext = {
-        project_id: projectId,
-        name: 'Current Project'
-      };
-      
-      console.log('Falling back to REST API for chat message');
-      
-      // Send to API
-      const response = await chatApi.sendMessage(chatMessages, sessionId, projectContext);
-      
-      // Add response to chat
-      if (response.data && response.data.message) {
-        setMessages(prev => [...prev, response.data.message]);
+    // Scroll to bottom
+    setTimeout(() => {
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
       }
+    }, 100);
+    
+    try {
+      // Send the message using the chat context
+      await sendChatMessage(messageContent);
     } catch (error) {
       console.error('Error sending message:', error);
-      toast.error(`Error: ${error.message || 'Failed to send message'}`);
+      toast.error('Failed to send message. Please try again.');
     } finally {
       setIsLoading(false);
     }
   };
+
+  // Create a new chat session
+  async function handleCreateNewSession() {
+    try {
+      setIsLoadingSessions(true);
+      await createChatSession(projectId);
+      toast.success('New chat session created');
+    } catch (error) {
+      console.error('Error creating new chat session:', error);
+      toast.error('Failed to create new chat session');
+    } finally {
+      setIsLoadingSessions(false);
+    }
+  }
 
   const handleKeyPress = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -540,6 +504,23 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
 
   return (
     <div className="h-full flex flex-col">
+      {/* Chat session selector */}
+      <div className="p-3 border-b border-background-lighter flex justify-between items-center">
+        <h3 className="text-sm font-medium text-gray-300">Chat Session</h3>
+        <button
+          onClick={handleCreateNewSession}
+          className="p-1 rounded-full hover:bg-background-lighter text-gray-400 hover:text-gray-300"
+          title="New chat session"
+          disabled={isLoadingSessions}
+        >
+          {isLoadingSessions ? (
+            <ArrowPathIcon className="w-5 h-5 animate-spin" />
+          ) : (
+            <PlusIcon className="w-5 h-5" />
+          )}
+        </button>
+      </div>
+      
       <div className="flex-grow overflow-y-auto p-4" ref={chatContainerRef}>
         <AnimatePresence>
           {messages.length === 0 ? (
@@ -560,7 +541,7 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
             ))
           )}
           
-          {isLoading && !messages.some(m => m.role === 'assistant' && !m.content) && (
+          {(isLoading || isApiProcessing) && !messages.some(m => m.role === 'assistant' && !m.content) && (
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -590,13 +571,13 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
             value={localInputMessage}
             onChange={handleInputChange}
             onKeyDown={handleKeyPress}
-            disabled={isLoading}
+            disabled={isLoading || isApiProcessing}
           />
           <div className="absolute bottom-3 right-3 flex space-x-2">
             <button
               className={`p-2 rounded-full ${isListening ? 'bg-red-500 text-white' : 'bg-background-lighter hover:bg-background-lighter/70 text-gray-400 hover:text-gray-300'}`}
               onClick={toggleVoiceRecognition}
-              disabled={isLoading}
+              disabled={isLoading || isApiProcessing}
               title={isListening ? "Stop listening" : "Start voice input"}
             >
               {isListening ? 
@@ -608,7 +589,7 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
             <button
               className="p-2 rounded-full bg-primary hover:bg-primary-lighter text-white"
               onClick={handleSendMessage}
-              disabled={!localInputMessage.trim() || isLoading}
+              disabled={!localInputMessage.trim() || isLoading || isApiProcessing}
               title="Send message"
             >
               <PaperAirplaneIcon className="w-5 h-5" />

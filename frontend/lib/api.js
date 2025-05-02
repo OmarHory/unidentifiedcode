@@ -240,6 +240,8 @@ api.interceptors.response.use(
 
 // Projects API with improved error handling
 export const projectsApi = {
+  // List all projects
+  list: () => api.get('/ide/projects'),
   create: (name, metadata = {}) => {
     console.log(`Creating project: ${name}`);
     return api.post('/ide/projects', { 

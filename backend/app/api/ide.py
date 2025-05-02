@@ -44,6 +44,29 @@ async def create_project(
             detail=f"Error creating project: {str(e)}"
         )
 
+@router.get("/projects", response_model=List[ProjectResponse])
+async def list_projects(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    List all projects for the current user
+    """
+    try:
+        result = await db.execute(
+            select(Project)
+            .where(Project.owner_id == current_user.id)
+        )
+        projects = result.scalars().all()
+        
+        return projects
+    except Exception as e:
+        logger.exception(f"Error listing projects: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error listing projects: {str(e)}"
+        )
+
 @router.get("/projects/{project_id}", response_model=ProjectResponse)
 async def get_project(
     project_id: str,
