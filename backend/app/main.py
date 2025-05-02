@@ -11,7 +11,7 @@ from datetime import datetime
 import asyncio
 from typing import Optional
 
-from app.api import code_chat, voice, diff, ide, logs, auth
+from app.api import chat, voice, diff, ide, logs, auth
 from app.core.config import settings
 from app.core.logger import logger
 from app.core.middleware import RateLimitMiddleware, AuthMiddleware
@@ -42,7 +42,7 @@ app.middleware("http")(AuthMiddleware())
 
 # Include routers
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
-app.include_router(code_chat.router, prefix="/api/chat", tags=["Chat"])
+app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(voice.router, prefix="/api/voice", tags=["Voice"])
 app.include_router(diff.router, prefix="/api/diff", tags=["Diff"])
 app.include_router(ide.router, prefix="/api/ide", tags=["IDE"])

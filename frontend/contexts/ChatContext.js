@@ -18,41 +18,120 @@ export function ChatProvider({ children }) {
 
   const { isAuthenticated } = useAuth();
 
-  // Load session ID from localStorage on mount, but only if authenticated
+  // State to store all chat sessions for the current project
+  const [chatSessions, setChatSessions] = useState([]);
+  const [currentChatSession, setCurrentChatSession] = useState(null);
+  
+  // When current project changes, load chat sessions for that project
   useEffect(() => {
-    if (isAuthenticated()) {
-      const storedSessionId = localStorage.getItem('chatSessionId');
-      if (storedSessionId) {
-        setSessionId(storedSessionId);
-        loadChatSession(storedSessionId);
-      } else {
-        // Create a new session ID
-        const newSessionId = uuidv4();
-        setSessionId(newSessionId);
-        localStorage.setItem('chatSessionId', newSessionId);
-      }
+    if (isAuthenticated() && currentProject) {
+      // Load all chat sessions for this project
+      loadChatSessions(currentProject.id);
     } else {
-      // Clear any existing chat session if not authenticated
-      localStorage.removeItem('chatSessionId');
+      // No authentication or no project selected
       setSessionId(null);
       setMessages([]);
+      setChatSessions([]);
+      setCurrentChatSession(null);
     }
-  }, [isAuthenticated]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProject]); // Removed isAuthenticated and loadChatSessions from deps to prevent infinite calls
+  
+  // Load all chat sessions for a project
+  async function loadChatSessions(projectId) {
+    if (!projectId || !isAuthenticated()) return;
+    
+    try {
+      const response = await chatApi.listSessions(projectId);
+      let sessions = [];
+      
+      // Handle different response formats
+      if (response.data) {
+        if (Array.isArray(response.data)) {
+          // Direct array of sessions
+          sessions = response.data;
+        } else if (response.data.sessions && Array.isArray(response.data.sessions)) {
+          // Object with sessions property
+          sessions = response.data.sessions;
+        }
+      }
+      
+      setChatSessions(sessions);
+      
+      // If there are sessions, load the most recent one
+      if (sessions.length > 0) {
+        // Sort sessions by created_at (newest first)
+        const sortedSessions = [...sessions].sort(
+          (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)
+        );
+        
+        const mostRecentSession = sortedSessions[0];
+        setCurrentChatSession(mostRecentSession);
+        setSessionId(mostRecentSession.id);
+        loadChatSession(mostRecentSession.id);
+      } else {
+        // No sessions found, create a new one
+        createChatSession(projectId);
+      }
+    } catch (err) {
+      console.error('Error loading chat sessions:', err);
+      setError(err.message || 'Failed to load chat sessions');
+      
+      // If there's an error, create a new session
+      createChatSession(projectId);
+    }
+  }
 
-  // Load chat messages when session ID changes
+  // Create a new chat session for a project
+  async function createChatSession(projectId, name = 'New Chat') {
+    if (!projectId) return;
+    
+    try {
+      const response = await chatApi.createSession(projectId, name);
+      const newSession = response.data;
+      
+      // Update state with the new session
+      setSessionId(newSession.id);
+      setCurrentChatSession(newSession);
+      setChatSessions(prev => [newSession, ...prev]);
+      setMessages([]);
+      
+      return newSession.id;
+    } catch (err) {
+      console.error('Error creating chat session:', err);
+      setError(err.message || 'Failed to create chat session');
+    }
+  }
+  
+  // Load chat messages for a specific session
   async function loadChatSession(sid) {
     if (!sid) return;
     
     try {
       const response = await chatApi.getSession(sid);
-      setMessages(response.data);
+      
+      // Update current session
+      if (response.data) {
+        setCurrentChatSession(response.data);
+        
+        // The API returns a structured response with messages array
+        if (response.data.messages) {
+          setMessages(response.data.messages);
+        } else {
+          setMessages([]);
+        }
+      }
     } catch (err) {
       console.error('Error loading chat session:', err);
-      // If session not found, create a new one
-      if (err.response && err.response.status === 404) {
-        const newSessionId = uuidv4();
-        setSessionId(newSessionId);
-        localStorage.setItem('chatSessionId', newSessionId);
+      
+      // If session not found and we have a current project, create a new one
+      if (err.response && err.response.status === 404 && currentProject) {
+        // Remove the invalid session from our list
+        setChatSessions(prev => prev.filter(session => session.id !== sid));
+        // Create a new session
+        createChatSession(currentProject.id);
+      } else {
+        setError(err.message || 'Failed to load chat session');
       }
     }
   }
@@ -78,10 +157,25 @@ export function ChatProvider({ children }) {
       // Send message to API
       const response = await chatApi.sendMessage([...messages, userMessage], sessionId, projectContext);
       
-      // Add assistant's response to messages
-      setMessages((prev) => [...prev, response.data.message]);
+      // The API returns the message directly, not wrapped in a 'message' property
+      const assistantMessage = response.data;
       
-      return response.data.message;
+      // Ensure the message has the required properties
+      if (assistantMessage) {
+        // Add assistant's response to messages
+        setMessages((prev) => [...prev, assistantMessage]);
+        return assistantMessage;
+      } else {
+        console.error('Unexpected API response format:', response.data);
+        const fallbackMessage = {
+          id: uuidv4(),
+          role: 'assistant',
+          content: 'Sorry, I received an unexpected response format. Please try again.',
+          created_at: new Date().toISOString(),
+        };
+        setMessages((prev) => [...prev, fallbackMessage]);
+        return fallbackMessage;
+      }
     } catch (err) {
       setError(err.message || 'Error sending message');
       throw err;
@@ -165,16 +259,22 @@ export function ChatProvider({ children }) {
     if (sessionId) {
       try {
         await chatApi.deleteSession(sessionId);
+        
+        // Remove the deleted session from our list
+        setChatSessions(prev => prev.filter(session => session.id !== sessionId));
       } catch (err) {
         console.error('Error deleting chat session:', err);
       }
     }
     
-    // Create a new session
-    const newSessionId = uuidv4();
-    setSessionId(newSessionId);
-    localStorage.setItem('chatSessionId', newSessionId);
-    setMessages([]);
+    // Create a new session if we have a current project
+    if (currentProject) {
+      createChatSession(currentProject.id);
+    } else {
+      setSessionId(null);
+      setCurrentChatSession(null);
+      setMessages([]);
+    }
   }
 
   return (
@@ -182,6 +282,8 @@ export function ChatProvider({ children }) {
       value={{
         messages,
         sessionId,
+        chatSessions,
+        currentChatSession,
         isRecording,
         transcript,
         isProcessing,
@@ -192,6 +294,11 @@ export function ChatProvider({ children }) {
         transcribeAudio,
         textToSpeech,
         clearChat,
+        createChatSession,
+        loadChatSession,
+        loadChatSessions,
+        setSessionId,
+        setCurrentChatSession
       }}
     >
       {children}

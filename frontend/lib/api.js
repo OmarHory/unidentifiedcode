@@ -240,12 +240,15 @@ api.interceptors.response.use(
 
 // Projects API with improved error handling
 export const projectsApi = {
+  // List all projects
+  list: () => api.get('/ide/projects'),
   create: (name, metadata = {}) => {
     console.log(`Creating project: ${name}`);
     return api.post('/ide/projects', { 
       name, 
       description: metadata.description || '', 
-      technology: metadata.technology || ''
+      technology: metadata.technology || '',
+      meta_data: metadata  // Include the full metadata object as meta_data
     }, {
       timeout: 60000 // 60 seconds timeout for project creation specifically
     });
@@ -311,10 +314,19 @@ export const projectsApi = {
 
 // Chat API
 export const chatApi = {
+  // Session management
+  createSession: (projectId, name) => 
+    api.post('/chat/sessions', { project_id: projectId, name }),
+  listSessions: (projectId) => 
+    api.get('/chat/sessions', { params: projectId ? { project_id: projectId } : {} }),
+  getSession: (sessionId) => 
+    api.get(`/chat/sessions/${sessionId}`),
+  deleteSession: (sessionId) => 
+    api.delete(`/chat/sessions/${sessionId}`),
+    
+  // Chat messages
   sendMessage: (messages, sessionId, projectContext) => 
     api.post('/chat/completions', { messages, session_id: sessionId, project_context: projectContext }),
-  getSession: (sessionId) => api.get(`/chat/sessions/${sessionId}`),
-  deleteSession: (sessionId) => api.delete(`/chat/sessions/${sessionId}`),
 };
 
 // Voice API

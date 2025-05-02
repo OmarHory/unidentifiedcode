@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import { authApi } from '../lib/api';
+import { useRouter } from 'next/router';
 
 // Create the auth context
 const AuthContext = createContext();
@@ -8,6 +9,7 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const router = useRouter();
 
   // Check for existing token on mount
   useEffect(() => {
@@ -30,17 +32,23 @@ export function AuthProvider({ children }) {
       const response = await authApi.login(username, password);
       
       console.log('Login response:', response.data);
-      const { access_token } = response.data;
+      // The backend returns { token, user } instead of { access_token }
+      const { token, user: userData } = response.data;
       
       // Store the token
-      authApi.setToken(access_token);
+      authApi.setToken(token);
       
-      // Set the user
-      setUser({ username });
+      // Set the user with data from response
+      setUser(userData || { username });
+      
+      // After successful login, redirect to projects page
+      // This will trigger the project loading in ProjectContext
+      router.push('/projects');
+      
       return true;
     } catch (err) {
       console.error('Login error:', err);
-      setError(err.response?.data?.detail || 'Login failed');
+      setError(err.response?.data?.detail || err.message || 'Login failed');
       return false;
     } finally {
       setLoading(false);
@@ -51,6 +59,9 @@ export function AuthProvider({ children }) {
   const logout = () => {
     authApi.removeToken();
     setUser(null);
+    
+    // Redirect to login page after logout
+    router.push('/login');
   };
 
   // Check if user is authenticated

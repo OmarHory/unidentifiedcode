@@ -1,15 +1,28 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { MicrophoneIcon, PaperAirplaneIcon, StopIcon, SparklesIcon } from '@heroicons/react/24/outline';
+import { MicrophoneIcon, PaperAirplaneIcon, StopIcon, SparklesIcon, ArrowPathIcon, PlusIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { chatApi, getWebSocketBaseUrl, createReconnectingWebSocket } from '../lib/api';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useChat } from '../contexts/ChatContext';
 
 export default function ChatInterface({ projectId, onCodeSuggestion }) {
-  const [messages, setMessages] = useState([]);
+  // Use the chat context instead of local state
+  const { 
+    messages, 
+    sessionId, 
+    chatSessions,
+    loadChatSessions,
+    createChatSession,
+    loadChatSession,
+    setSessionId,
+    sendMessage: sendChatMessage,
+    isProcessing: isApiProcessing
+  } = useChat();
+  
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [sessionId, setSessionId] = useState(null);
+  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const chatContainerRef = useRef(null);
   const wsRef = useRef(null);
 
@@ -47,53 +60,50 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
     };
   }, []);
 
-  // Initialize WebSocket connection and session
+  // Load chat sessions for this project when the component mounts
   useEffect(() => {
-    // Check if we have a session ID in localStorage
-    const storedSessionId = localStorage.getItem(`chat_session_${projectId}`);
-    let currentSessionId;
+    if (projectId) {
+      setIsLoadingSessions(true);
+      loadChatSessions(projectId)
+        .finally(() => setIsLoadingSessions(false));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]); // Removed loadChatSessions from deps to prevent infinite calls
+  
+  // Track WebSocket connection state
+  const [wsConnected, setWsConnected] = useState(false);
+  // Track if we've shown a reconnection toast to prevent duplicates
+  const reconnectToastShownRef = useRef(false);
+
+  // Set up WebSocket connection when session ID changes
+  useEffect(() => {
+    if (!sessionId) return;
     
-    if (storedSessionId) {
-      currentSessionId = storedSessionId;
-      setSessionId(storedSessionId);
-      
-      // Try to load previous messages
-      const loadSession = async () => {
-        try {
-          const response = await chatApi.getSession(storedSessionId);
-          if (response.data && Array.isArray(response.data)) {
-            setMessages(response.data);
-          }
-        } catch (error) {
-          console.error('Error loading chat session:', error);
-          // Generate a new session ID if we couldn't load the previous one
-          currentSessionId = `session_${Date.now()}`;
-          setSessionId(currentSessionId);
-          localStorage.setItem(`chat_session_${projectId}`, currentSessionId);
-        }
-      };
-      
-      loadSession();
-    } else {
-      // Create new session ID
-      currentSessionId = `session_${Date.now()}`;
-      setSessionId(currentSessionId);
-      localStorage.setItem(`chat_session_${projectId}`, currentSessionId);
+    // Clear any existing WebSocket
+    if (wsRef.current) {
+      console.log('Closing existing WebSocket connection');
+      wsRef.current.close(1000, "New connection requested");
+      wsRef.current = null;
     }
     
-    // Set up WebSocket connection with the updated URL format
     const wsBaseUrl = getWebSocketBaseUrl();
-    const wsUrl = `${wsBaseUrl}/chat/ws/${currentSessionId}`;
+    const wsUrl = `${wsBaseUrl}/chat/ws/${sessionId}`;
     console.log('Connecting to WebSocket URL:', wsUrl);
     
     // Use the enhanced WebSocket with reconnection
     const ws = createReconnectingWebSocket(wsUrl, {
       debug: true,
-      maxReconnectAttempts: 10,
-      reconnectInterval: 1000,
+      maxReconnectAttempts: 5,
+      reconnectInterval: 2000,
       onOpen: () => {
         console.log('WebSocket connection established');
-        toast.success('Connected to chat server');
+        // Only show toast if we weren't previously connected and this is the initial connection
+        if (!wsConnected && !reconnectToastShownRef.current) {
+          toast.success('Connected to chat server');
+        }
+        // Reset reconnection toast flag when successfully connected
+        reconnectToastShownRef.current = false;
+        setWsConnected(true);
         // Reset loading state if it was stuck
         if (isLoading) {
           setIsLoading(false);
@@ -142,7 +152,9 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
       },
       onError: (error) => {
         console.error('WebSocket error:', error);
-        toast.error('WebSocket connection error. Attempting to reconnect...');
+        // Don't show any error toasts for WebSocket errors
+        // They're handled by the reconnection logic
+        
         // Reset loading state if it's stuck due to an error
         if (isLoading) {
           setTimeout(() => {
@@ -152,6 +164,10 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
       },
       onClose: (event) => {
         console.log('WebSocket connection closed', event?.code, event?.reason);
+        // Only update state for unexpected closures
+        if (event?.code !== 1000) {
+          setWsConnected(false);
+        }
         // Reset loading state if it was stuck
         if (isLoading) {
           setTimeout(() => {
@@ -161,11 +177,17 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
       },
       onReconnect: (attempt) => {
         console.log(`Attempting to reconnect (${attempt})...`);
-        toast(`Reconnecting to chat server... (Attempt ${attempt})`);
+        // Don't show any reconnection toasts to avoid spam
+        // Just set the flag that we're in reconnection mode
+        reconnectToastShownRef.current = true;
       },
       onMaxReconnectAttemptsExceeded: () => {
         console.error('Max reconnect attempts exceeded');
-        toast.error('Could not reconnect to chat server. Please refresh the page.');
+        // Only show this critical error toast if we haven't shown a reconnection toast
+        if (!reconnectToastShownRef.current) {
+          toast.error('Could not connect to chat server. Please refresh the page.');
+          reconnectToastShownRef.current = true;
+        }
         // Reset loading state if it's stuck due to failed reconnection
         if (isLoading) {
           setIsLoading(false);
@@ -178,85 +200,62 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
     return () => {
       if (ws) {
         ws.close(1000, "Component unmounting");
+        wsRef.current = null;
       }
     };
-  }, [projectId]);
+  }, [sessionId]); // Only recreate when sessionId changes
 
-  // Scroll to bottom when messages change
+  // Scroll to bottom when messages change or when loading state changes
   useEffect(() => {
     if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      // Scroll to bottom with a smooth animation
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
     }
-  }, [messages]);
+  }, [messages, isLoading, isApiProcessing]);
 
-  const handleSendMessage = async () => {
-    if (!localInputMessage.trim()) return;
+  async function handleSendMessage() {
+    if (!inputMessage.trim()) return;
     
-    const userMessage = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: localInputMessage,
-    };
-    
-    // Add message to UI immediately
-    setMessages(prev => [...prev, userMessage]);
+    // Clear the input field immediately for better UX
+    const messageContent = inputMessage.trim();
     setLocalInputMessage('');
     setInputMessage('');
-    
-    // Send message via WebSocket if connected
-    if (wsRef.current && wsRef.current.getState() === WebSocket.OPEN) {
-      try {
-        wsRef.current.send({
-          message: userMessage,
-          project_id: projectId
-        });
-        setIsLoading(true);
-      } catch (error) {
-        console.error('Error sending message via WebSocket:', error);
-        fallbackToRestApi(userMessage);
-      }
-    } else {
-      // Fallback to REST API if WebSocket is not connected
-      fallbackToRestApi(userMessage);
-    }
-  };
-  
-  // Fallback to REST API if WebSocket connection fails
-  const fallbackToRestApi = async (userMessage) => {
     setIsLoading(true);
     
-    try {
-      // Prepare chat messages for API
-      const chatMessages = [
-        ...messages.map(msg => ({
-          role: msg.role,
-          content: msg.content
-        })),
-        { role: 'user', content: userMessage.content }
-      ];
-      
-      // Include project context
-      const projectContext = {
-        project_id: projectId,
-        name: 'Current Project'
-      };
-      
-      console.log('Falling back to REST API for chat message');
-      
-      // Send to API
-      const response = await chatApi.sendMessage(chatMessages, sessionId, projectContext);
-      
-      // Add response to chat
-      if (response.data && response.data.message) {
-        setMessages(prev => [...prev, response.data.message]);
+    // Scroll to bottom
+    setTimeout(() => {
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
       }
+    }, 100);
+    
+    try {
+      // Send the message using the chat context
+      await sendChatMessage(messageContent);
     } catch (error) {
       console.error('Error sending message:', error);
-      toast.error(`Error: ${error.message || 'Failed to send message'}`);
+      toast.error('Failed to send message. Please try again.');
     } finally {
       setIsLoading(false);
     }
   };
+
+  // Create a new chat session
+  async function handleCreateNewSession() {
+    try {
+      setIsLoadingSessions(true);
+      await createChatSession(projectId);
+      toast.success('New chat session created');
+    } catch (error) {
+      console.error('Error creating new chat session:', error);
+      toast.error('Failed to create new chat session');
+    } finally {
+      setIsLoadingSessions(false);
+    }
+  }
 
   const handleKeyPress = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -510,14 +509,21 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
   };
 
   const MessageBubble = ({ message }) => {
+    // Ensure message has all required properties with defaults
+    const safeMessage = {
+      role: message?.role || 'assistant',
+      content: message?.content || '',
+      ...message
+    };
+    
     return (
       <motion.div 
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
-        className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} mb-4`}
+        className={`flex ${safeMessage.role === 'user' ? 'justify-end' : 'justify-start'} mb-4`}
       >
-        {message.role !== 'user' && (
+        {safeMessage.role !== 'user' && (
           <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white text-sm mr-2 shadow-glow">
             <SparklesIcon className="w-5 h-5" />
           </div>
@@ -525,13 +531,13 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
         
         <div 
           className={`max-w-[75%] p-3 rounded-lg ${
-            message.role === 'user' 
+            safeMessage.role === 'user' 
               ? 'bg-primary/20 text-white' 
               : 'bg-background-lighter text-gray-100'
           }`}
         >
           <div className="text-sm whitespace-pre-wrap">
-            {message.content || (isLoading ? '...' : '')}
+            {safeMessage.content || (isLoading ? '...' : '')}
           </div>
         </div>
       </motion.div>
@@ -540,13 +546,35 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex-grow overflow-y-auto p-4" ref={chatContainerRef}>
+      {/* Chat session selector */}
+      <div className="p-3 border-b border-background-lighter flex justify-between items-center">
+        <h3 className="text-sm font-medium text-gray-300">Chat Session</h3>
+        <button
+          onClick={handleCreateNewSession}
+          className="p-1 rounded-full hover:bg-background-lighter text-gray-400 hover:text-gray-300"
+          title="New chat session"
+          disabled={isLoadingSessions}
+        >
+          {isLoadingSessions ? (
+            <ArrowPathIcon className="w-5 h-5 animate-spin" />
+          ) : (
+            <PlusIcon className="w-5 h-5" />
+          )}
+        </button>
+      </div>
+      
+      {/* Chat messages container with fixed height and auto scroll */}
+      <div 
+        className="flex-grow overflow-y-auto p-4 flex flex-col" 
+        ref={chatContainerRef}
+        style={{ maxHeight: 'calc(100vh - 180px)' }}
+      >
         <AnimatePresence>
           {messages.length === 0 ? (
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="h-full flex flex-col items-center justify-center text-center p-6 text-gray-400"
+              className="h-full flex flex-col items-center justify-center text-center p-6 text-gray-400 min-h-[300px]"
             >
               <SparklesIcon className="w-12 h-12 mb-3 text-primary" />
               <h3 className="text-xl font-medium mb-2 text-gray-300">How can I help you today?</h3>
@@ -555,12 +583,19 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
               </p>
             </motion.div>
           ) : (
-            messages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
-            ))
+            <div className="flex flex-col w-full space-y-4">
+              {messages
+                .filter(message => message !== null && message !== undefined)
+                .map((message, index) => (
+                  <MessageBubble key={message?.id || `msg-${index}`} message={message} />
+                ))
+              }
+              {/* Add extra space at the bottom to ensure last message is fully visible */}
+              <div className="h-4"></div>
+            </div>
           )}
           
-          {isLoading && !messages.some(m => m.role === 'assistant' && !m.content) && (
+          {(isLoading || isApiProcessing) && !messages.some(m => m.role === 'assistant' && !m.content) && (
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -581,7 +616,7 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
         </AnimatePresence>
       </div>
       
-      <div className="p-4 border-t border-background-lighter">
+      <div className="p-4 border-t border-background-lighter sticky bottom-0 bg-background">
         <div className="relative">
           <textarea
             className="w-full p-3 pr-20 rounded-lg bg-background-lighter border border-background-lighter/50 focus:border-primary/30 focus:ring-1 focus:ring-primary/20 outline-none resize-none"
@@ -590,13 +625,13 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
             value={localInputMessage}
             onChange={handleInputChange}
             onKeyDown={handleKeyPress}
-            disabled={isLoading}
+            disabled={isLoading || isApiProcessing}
           />
           <div className="absolute bottom-3 right-3 flex space-x-2">
             <button
               className={`p-2 rounded-full ${isListening ? 'bg-red-500 text-white' : 'bg-background-lighter hover:bg-background-lighter/70 text-gray-400 hover:text-gray-300'}`}
               onClick={toggleVoiceRecognition}
-              disabled={isLoading}
+              disabled={isLoading || isApiProcessing}
               title={isListening ? "Stop listening" : "Start voice input"}
             >
               {isListening ? 
@@ -608,7 +643,7 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
             <button
               className="p-2 rounded-full bg-primary hover:bg-primary-lighter text-white"
               onClick={handleSendMessage}
-              disabled={!localInputMessage.trim() || isLoading}
+              disabled={!localInputMessage.trim() || isLoading || isApiProcessing}
               title="Send message"
             >
               <PaperAirplaneIcon className="w-5 h-5" />

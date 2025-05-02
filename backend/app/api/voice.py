@@ -1,5 +1,7 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Body, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Body, WebSocket, WebSocketDisconnect, status, Depends
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 import base64
 from typing import Optional, Dict, Any, List
 import uuid
@@ -7,13 +9,19 @@ import json
 import asyncio
 import io
 import time
+from datetime import datetime
 from openai import OpenAIError
 import websockets
 
 from app.models.chat import VoiceTranscriptionRequest, VoiceTranscriptionResponse
-from app.services.voice_service import VoiceService, voice_service
+from app.models.chat_models import VoiceSession
+from app.services.voice_service import VoiceService
 from app.core.logger import logger
 from app.core.config import settings
+from app.core.database import get_db
+from app.core.auth import get_current_user
+from app.models.user import User
+from app.models.project import Project
 
 router = APIRouter()
 
@@ -53,7 +61,11 @@ class PhoneCallResponse(BaseModel):
     timestamp: str
 
 @router.post("/transcribe", response_model=VoiceTranscriptionResponse)
-async def transcribe_audio(audio_file: UploadFile = File(...)):
+async def transcribe_audio(
+    audio_file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Transcribe an audio file to text using OpenAI Whisper
     """
@@ -66,6 +78,17 @@ async def transcribe_audio(audio_file: UploadFile = File(...)):
         
         # Transcribe using the voice service
         result = await voice_service.transcribe_audio(audio_base64)
+        
+        # Create voice session record
+        session = VoiceSession(
+            id=str(uuid.uuid4()),
+            user_id=current_user.id,
+            audio_url=None,  # We could store the audio file if needed
+            transcript=result["text"],
+            confidence=result["confidence"]
+        )
+        db.add(session)
+        await db.commit()
         
         return VoiceTranscriptionResponse(
             text=result["text"],
@@ -91,13 +114,28 @@ async def transcribe_audio(audio_file: UploadFile = File(...)):
         )
 
 @router.post("/transcribe-base64", response_model=VoiceTranscriptionResponse)
-async def transcribe_audio_base64(request: VoiceTranscriptionRequest):
+async def transcribe_audio_base64(
+    request: VoiceTranscriptionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Transcribe base64 encoded audio to text using OpenAI Whisper
     """
     try:
         # Transcribe using the voice service
         result = await voice_service.transcribe_audio(request.audio_file)
+        
+        # Create voice session record
+        session = VoiceSession(
+            id=str(uuid.uuid4()),
+            user_id=current_user.id,
+            audio_url=None,
+            transcript=result["text"],
+            confidence=result["confidence"]
+        )
+        db.add(session)
+        await db.commit()
         
         return VoiceTranscriptionResponse(
             text=result["text"],
@@ -123,7 +161,11 @@ async def transcribe_audio_base64(request: VoiceTranscriptionRequest):
         )
 
 @router.post("/text-to-speech", response_model=TextToSpeechResponse)
-async def convert_text_to_speech(request: TextToSpeechRequest):
+async def convert_text_to_speech(
+    request: TextToSpeechRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Convert text to speech using OpenAI TTS
     """
@@ -222,7 +264,11 @@ async def stream_audio_chunk(
         )
 
 @router.post("/elevenlabs/text-to-speech", response_model=TextToSpeechResponse)
-async def elevenlabs_text_to_speech(request: ElevenLabsTextToSpeechRequest):
+async def elevenlabs_text_to_speech(
+    request: ElevenLabsTextToSpeechRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Convert text to speech using ElevenLabs TTS
     """
@@ -247,12 +293,30 @@ async def elevenlabs_text_to_speech(request: ElevenLabsTextToSpeechRequest):
             detail=f"Error converting text to speech with ElevenLabs: {str(e)}"
         )
 
-@router.post("/phone-call/start", response_model=PhoneCallResponse)
-async def start_phone_call(request: PhoneCallRequest):
+@router.post("/phone/start", response_model=PhoneCallResponse)
+async def start_phone_call(
+    request: PhoneCallRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     Start a phone call with the LLM
     """
     try:
+        # Validate project exists and ownership
+        result = await db.execute(
+            select(Project)
+            .where(Project.id == request.project_id)
+            .where(Project.owner_id == current_user.id)
+        )
+        project = result.scalar_one_or_none()
+        
+        if not project:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Project not found: {request.project_id}"
+            )
+        
         result = await voice_service.start_phone_call(request.project_id)
         return PhoneCallResponse(**result)
     except ValueError as e:
@@ -268,8 +332,12 @@ async def start_phone_call(request: PhoneCallRequest):
             detail=f"Error starting phone call: {str(e)}"
         )
 
-@router.post("/phone-call/end/{call_id}", response_model=Dict[str, Any])
-async def end_phone_call(call_id: str):
+@router.post("/phone/end")
+async def end_phone_call(
+    call_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     """
     End a phone call with the LLM
     """
@@ -289,8 +357,11 @@ async def end_phone_call(call_id: str):
             detail=f"Error ending phone call: {str(e)}"
         )
 
-@router.websocket("/asr/stream")
-async def stream_asr(websocket: WebSocket):
+@router.websocket("/asr/ws")
+async def stream_asr(
+    websocket: WebSocket,
+    db: AsyncSession = Depends(get_db)
+):
     """
     WebSocket endpoint for streaming ASR using ElevenLabs
     """
@@ -407,8 +478,11 @@ async def stream_asr(websocket: WebSocket):
     # Ensure websocket is closed
     await websocket.close()
 
-@router.websocket("/tts/stream")
-async def stream_tts(websocket: WebSocket):
+@router.websocket("/tts/ws")
+async def stream_tts(
+    websocket: WebSocket,
+    db: AsyncSession = Depends(get_db)
+):
     """
     WebSocket endpoint for streaming TTS using ElevenLabs
     """

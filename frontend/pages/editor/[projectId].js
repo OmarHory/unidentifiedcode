@@ -34,7 +34,7 @@ export default function EditorPage() {
     const loadCurrentProject = async () => {
       try {
         await loadProject(projectId);
-        toast.success('Project loaded successfully');
+        // Removed success toast to reduce notification noise
         setIsInitialized(true);
       } catch (err) {
         console.error('Error loading project:', err);
