@@ -174,12 +174,16 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
     };
   }, [projectId]);
 
-  // Scroll to bottom when messages change
+  // Scroll to bottom when messages change or when loading state changes
   useEffect(() => {
     if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      // Scroll to bottom with a smooth animation
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
     }
-  }, [messages]);
+  }, [messages, isLoading, isApiProcessing]);
 
   async function handleSendMessage() {
     if (!inputMessage.trim()) return;
@@ -528,13 +532,18 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
         </button>
       </div>
       
-      <div className="flex-grow overflow-y-auto p-4" ref={chatContainerRef}>
+      {/* Chat messages container with fixed height and auto scroll */}
+      <div 
+        className="flex-grow overflow-y-auto p-4 flex flex-col" 
+        ref={chatContainerRef}
+        style={{ maxHeight: 'calc(100vh - 180px)' }}
+      >
         <AnimatePresence>
           {messages.length === 0 ? (
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="h-full flex flex-col items-center justify-center text-center p-6 text-gray-400"
+              className="h-full flex flex-col items-center justify-center text-center p-6 text-gray-400 min-h-[300px]"
             >
               <SparklesIcon className="w-12 h-12 mb-3 text-primary" />
               <h3 className="text-xl font-medium mb-2 text-gray-300">How can I help you today?</h3>
@@ -543,10 +552,16 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
               </p>
             </motion.div>
           ) : (
-            messages.filter(message => message !== null && message !== undefined)
-              .map((message, index) => (
-                <MessageBubble key={message?.id || `msg-${index}`} message={message} />
-              ))
+            <div className="flex flex-col w-full space-y-4">
+              {messages
+                .filter(message => message !== null && message !== undefined)
+                .map((message, index) => (
+                  <MessageBubble key={message?.id || `msg-${index}`} message={message} />
+                ))
+              }
+              {/* Add extra space at the bottom to ensure last message is fully visible */}
+              <div className="h-4"></div>
+            </div>
           )}
           
           {(isLoading || isApiProcessing) && !messages.some(m => m.role === 'assistant' && !m.content) && (
@@ -570,7 +585,7 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
         </AnimatePresence>
       </div>
       
-      <div className="p-4 border-t border-background-lighter">
+      <div className="p-4 border-t border-background-lighter sticky bottom-0 bg-background">
         <div className="relative">
           <textarea
             className="w-full p-3 pr-20 rounded-lg bg-background-lighter border border-background-lighter/50 focus:border-primary/30 focus:ring-1 focus:ring-primary/20 outline-none resize-none"
