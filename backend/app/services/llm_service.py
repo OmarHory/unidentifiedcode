@@ -88,8 +88,9 @@ class LLMService:
             async for chunk in self.generate_completion_stream(messages, project_context):
                 full_response += chunk
             
-            # Create chat message from the response
+            # Create chat message from the response with a unique ID
             return ChatMessage(
+                id=str(uuid.uuid4()),
                 role=MessageRole.ASSISTANT,
                 content=full_response
             )

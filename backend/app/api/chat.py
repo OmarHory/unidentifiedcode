@@ -16,6 +16,7 @@ from app.models.chat import MessageRole, MessageType
 from app.services.llm_service import llm_service
 from app.services.ide_service import IDEService
 from app.core.cache import cache
+from app.core.logger import logger
 
 router = APIRouter()
 
@@ -332,11 +333,20 @@ async def chat_completion(
         # Convert to the format expected by LLM service
         llm_messages = []
         for msg in existing_messages:
-            llm_messages.append({
-                "id": msg.id,
-                "role": MessageRole(msg.role),
-                "content": msg.content
-            })
+            try:
+                llm_messages.append(ChatMessage(
+                    id=msg.id,
+                    role=MessageRole(msg.role),
+                    content=msg.content
+                ))
+            except Exception as e:
+                logger.warning(f"Error converting message to LLM format: {str(e)}")
+                # Use a simpler format as fallback
+                llm_messages.append(ChatMessage(
+                    id=msg.id,
+                    role="user" if msg.role == "user" else "assistant",
+                    content=msg.content
+                ))
             
         # Add the new user message
         user_message_id = str(uuid.uuid4())
@@ -351,11 +361,11 @@ async def chat_completion(
         await db.commit()
         
         # Add to LLM messages
-        llm_messages.append({
-            "id": user_message_id,
-            "role": MessageRole.USER,
-            "content": request.messages[-1].content
-        })
+        llm_messages.append(ChatMessage(
+            id=user_message_id,
+            role=MessageRole.USER,
+            content=request.messages[-1].content
+        ))
         
         # Try to get cached response for the exact same conversation
         cache_key = f"chat_completion:{session.id}:{hash(str(llm_messages))}"

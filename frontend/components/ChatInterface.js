@@ -474,14 +474,21 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
   };
 
   const MessageBubble = ({ message }) => {
+    // Ensure message has all required properties with defaults
+    const safeMessage = {
+      role: message?.role || 'assistant',
+      content: message?.content || '',
+      ...message
+    };
+    
     return (
       <motion.div 
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3 }}
-        className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} mb-4`}
+        className={`flex ${safeMessage.role === 'user' ? 'justify-end' : 'justify-start'} mb-4`}
       >
-        {message.role !== 'user' && (
+        {safeMessage.role !== 'user' && (
           <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white text-sm mr-2 shadow-glow">
             <SparklesIcon className="w-5 h-5" />
           </div>
@@ -489,13 +496,13 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
         
         <div 
           className={`max-w-[75%] p-3 rounded-lg ${
-            message.role === 'user' 
+            safeMessage.role === 'user' 
               ? 'bg-primary/20 text-white' 
               : 'bg-background-lighter text-gray-100'
           }`}
         >
           <div className="text-sm whitespace-pre-wrap">
-            {message.content || (isLoading ? '...' : '')}
+            {safeMessage.content || (isLoading ? '...' : '')}
           </div>
         </div>
       </motion.div>
@@ -536,9 +543,10 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
               </p>
             </motion.div>
           ) : (
-            messages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
-            ))
+            messages.filter(message => message !== null && message !== undefined)
+              .map((message, index) => (
+                <MessageBubble key={message?.id || `msg-${index}`} message={message} />
+              ))
           )}
           
           {(isLoading || isApiProcessing) && !messages.some(m => m.role === 'assistant' && !m.content) && (
