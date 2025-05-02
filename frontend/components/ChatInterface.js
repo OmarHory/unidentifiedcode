@@ -70,9 +70,21 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]); // Removed loadChatSessions from deps to prevent infinite calls
   
+  // Track WebSocket connection state
+  const [wsConnected, setWsConnected] = useState(false);
+  // Track if we've shown a reconnection toast to prevent duplicates
+  const reconnectToastShownRef = useRef(false);
+
   // Set up WebSocket connection when session ID changes
   useEffect(() => {
     if (!sessionId) return;
+    
+    // Clear any existing WebSocket
+    if (wsRef.current) {
+      console.log('Closing existing WebSocket connection');
+      wsRef.current.close(1000, "New connection requested");
+      wsRef.current = null;
+    }
     
     const wsBaseUrl = getWebSocketBaseUrl();
     const wsUrl = `${wsBaseUrl}/chat/ws/${sessionId}`;
@@ -81,11 +93,17 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
     // Use the enhanced WebSocket with reconnection
     const ws = createReconnectingWebSocket(wsUrl, {
       debug: true,
-      maxReconnectAttempts: 10,
-      reconnectInterval: 1000,
+      maxReconnectAttempts: 5,
+      reconnectInterval: 2000,
       onOpen: () => {
         console.log('WebSocket connection established');
-        toast.success('Connected to chat server');
+        // Only show toast if we weren't previously connected and this is the initial connection
+        if (!wsConnected && !reconnectToastShownRef.current) {
+          toast.success('Connected to chat server');
+        }
+        // Reset reconnection toast flag when successfully connected
+        reconnectToastShownRef.current = false;
+        setWsConnected(true);
         // Reset loading state if it was stuck
         if (isLoading) {
           setIsLoading(false);
@@ -134,7 +152,9 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
       },
       onError: (error) => {
         console.error('WebSocket error:', error);
-        toast.error('WebSocket connection error. Attempting to reconnect...');
+        // Don't show any error toasts for WebSocket errors
+        // They're handled by the reconnection logic
+        
         // Reset loading state if it's stuck due to an error
         if (isLoading) {
           setTimeout(() => {
@@ -144,6 +164,10 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
       },
       onClose: (event) => {
         console.log('WebSocket connection closed', event?.code, event?.reason);
+        // Only update state for unexpected closures
+        if (event?.code !== 1000) {
+          setWsConnected(false);
+        }
         // Reset loading state if it was stuck
         if (isLoading) {
           setTimeout(() => {
@@ -153,11 +177,17 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
       },
       onReconnect: (attempt) => {
         console.log(`Attempting to reconnect (${attempt})...`);
-        toast(`Reconnecting to chat server... (Attempt ${attempt})`);
+        // Don't show any reconnection toasts to avoid spam
+        // Just set the flag that we're in reconnection mode
+        reconnectToastShownRef.current = true;
       },
       onMaxReconnectAttemptsExceeded: () => {
         console.error('Max reconnect attempts exceeded');
-        toast.error('Could not reconnect to chat server. Please refresh the page.');
+        // Only show this critical error toast if we haven't shown a reconnection toast
+        if (!reconnectToastShownRef.current) {
+          toast.error('Could not connect to chat server. Please refresh the page.');
+          reconnectToastShownRef.current = true;
+        }
         // Reset loading state if it's stuck due to failed reconnection
         if (isLoading) {
           setIsLoading(false);
@@ -170,9 +200,10 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
     return () => {
       if (ws) {
         ws.close(1000, "Component unmounting");
+        wsRef.current = null;
       }
     };
-  }, [projectId]);
+  }, [sessionId]); // Only recreate when sessionId changes
 
   // Scroll to bottom when messages change or when loading state changes
   useEffect(() => {
