@@ -87,6 +87,13 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
       wsRef.current = null;
     }
     
+    // Load chat session data if we have a session ID
+    // This ensures we have the latest messages when refreshing the page
+    loadChatSession(sessionId).catch(err => {
+      console.error('Error loading chat session:', err);
+      toast.error('Failed to load chat history');
+    });
+    
     const wsBaseUrl = getWebSocketBaseUrl();
     const wsUrl = `${wsBaseUrl}/chat/ws/${sessionId}`;
     console.log('Connecting to WebSocket URL:', wsUrl);

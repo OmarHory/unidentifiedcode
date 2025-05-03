@@ -10,7 +10,7 @@ from app.core.logger import logger
 # Structure: {ip: (requests_count, start_time)}
 RATE_LIMIT_STORAGE: Dict[str, Tuple[int, float]] = {}
 RATE_LIMIT_WINDOW = 60  # 1 minute
-RATE_LIMIT_MAX_REQUESTS = 100  # Maximum requests per minute
+RATE_LIMIT_MAX_REQUESTS = 1000  # Maximum requests per minute
 
 security = HTTPBearer()
 
