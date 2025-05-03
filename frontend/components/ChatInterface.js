@@ -587,9 +587,10 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
         ref={chatContainerRef}
         style={{ maxHeight: 'calc(100vh - 180px)' }}
       >
-        <AnimatePresence>
+        <AnimatePresence mode="wait">
           {messages.length === 0 ? (
             <motion.div 
+              key="empty-state"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               className="h-full flex flex-col items-center justify-center text-center p-6 text-gray-400 min-h-[300px]"
@@ -601,7 +602,10 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
               </p>
             </motion.div>
           ) : (
-            <div className="flex flex-col w-full space-y-4">
+            <motion.div 
+              key="message-list"
+              className="flex flex-col w-full space-y-4"
+            >
               {messages
                 .filter(message => message !== null && message !== undefined)
                 .map((message, index) => (
@@ -610,11 +614,12 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
               }
               {/* Add extra space at the bottom to ensure last message is fully visible */}
               <div className="h-4"></div>
-            </div>
+            </motion.div>
           )}
           
           {(isLoading || isApiProcessing) && !messages.some(m => m.role === 'assistant' && !m.content) && (
             <motion.div 
+              key="loading-indicator"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               className="flex justify-start mb-4"
