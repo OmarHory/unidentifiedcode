@@ -16,7 +16,8 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
     loadChatSession,
     setSessionId,
     sendMessage: sendChatMessage,
-    isProcessing: isApiProcessing
+    isProcessing: isApiProcessing,
+    setMessages
   } = useChat();
   
   const [inputMessage, setInputMessage] = useState('');
@@ -233,12 +234,29 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
     }, 100);
     
     try {
-      // Send the message using the chat context
-      await sendChatMessage(messageContent);
+      // Send the message using the chat context to update local state
+      const userMessage = await sendChatMessage(messageContent);
+      
+      // Now send the message via WebSocket if connected
+      if (wsRef.current && wsConnected) {
+        // Prepare project context if needed
+        const projectContext = projectId ? { project_id: projectId } : null;
+        
+        // Send the message through WebSocket
+        wsRef.current.send(JSON.stringify({
+          message: userMessage,
+          project_id: projectId
+        }));
+        
+        console.log('Message sent via WebSocket:', userMessage);
+      } else {
+        console.error('WebSocket not connected, cannot send message');
+        toast.error('Not connected to chat server. Please refresh the page.');
+        setIsLoading(false);
+      }
     } catch (error) {
       console.error('Error sending message:', error);
       toast.error('Failed to send message. Please try again.');
-    } finally {
       setIsLoading(false);
     }
   };

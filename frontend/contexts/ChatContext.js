@@ -154,28 +154,11 @@ export function ChatProvider({ children }) {
       // Prepare project context if needed
       const projectContext = currentProject ? { project_id: currentProject.id } : null;
       
-      // Send message to API
-      const response = await chatApi.sendMessage([...messages, userMessage], sessionId, projectContext);
+      // Check if WebSocket is connected in ChatInterface component
+      // The actual message sending is now handled by the WebSocket in ChatInterface
+      // This function now only updates the local state
       
-      // The API returns the message directly, not wrapped in a 'message' property
-      const assistantMessage = response.data;
-      
-      // Ensure the message has the required properties
-      if (assistantMessage) {
-        // Add assistant's response to messages
-        setMessages((prev) => [...prev, assistantMessage]);
-        return assistantMessage;
-      } else {
-        console.error('Unexpected API response format:', response.data);
-        const fallbackMessage = {
-          id: uuidv4(),
-          role: 'assistant',
-          content: 'Sorry, I received an unexpected response format. Please try again.',
-          created_at: new Date().toISOString(),
-        };
-        setMessages((prev) => [...prev, fallbackMessage]);
-        return fallbackMessage;
-      }
+      return userMessage;
     } catch (err) {
       setError(err.message || 'Error sending message');
       throw err;
@@ -281,6 +264,7 @@ export function ChatProvider({ children }) {
     <ChatContext.Provider
       value={{
         messages,
+        setMessages,
         sessionId,
         chatSessions,
         currentChatSession,

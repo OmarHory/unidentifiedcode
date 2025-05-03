@@ -10,10 +10,9 @@ from datetime import datetime
 from app.core.database import get_db
 from app.core.auth import get_current_user
 from app.models.chat_models import ChatSession, ChatMessage
-from app.models.chat_pydantic import ChatMessagePydantic
+from app.models.chat_pydantic import ChatMessagePydantic, ChatSessionResponse, ChatSessionCreate, ChatMessageResponse, MessageRole, MessageContent, MessageType, ChatSessionDetailResponse, ChatRequest
 from app.models.user_models import User
 from app.models.project_models import Project
-from app.models.chat_pydantic import MessageRole
 from app.services.llm_service import llm_service
 from app.services.ide_service import IDEService
 from app.core.cache import cache
@@ -27,46 +26,6 @@ router = APIRouter()
 
 # Initialize services
 ide_service = IDEService()
-
-class Message(BaseModel):
-    role: str
-    content: str
-    id: Optional[str] = None
-    created_at: Optional[str] = None
-
-class ProjectContext(BaseModel):
-    project_id: str
-    file_path: Optional[str] = None
-
-class ChatRequest(BaseModel):
-    messages: List[Message]
-    session_id: str
-    project_context: Optional[ProjectContext] = None
-
-class ChatSessionCreate(BaseModel):
-    project_id: str
-    name: Optional[str] = None
-    
-class ChatMessageResponse(BaseModel):
-    id: str
-    role: str
-    content: str
-    created_at: str
-    
-class ChatSessionResponse(BaseModel):
-    id: str
-    project_id: Optional[str] = None
-    name: Optional[str] = None
-    created_at: str
-    updated_at: Optional[str] = None
-    
-class ChatSessionDetailResponse(BaseModel):
-    id: str
-    project_id: Optional[str] = None
-    name: Optional[str] = None
-    created_at: str
-    updated_at: Optional[str] = None
-    messages: List[ChatMessageResponse]
 
 
 @router.post("/sessions", response_model=ChatSessionResponse)
@@ -279,7 +238,14 @@ async def chat_completion(
 ):
     """
     Send chat message and get completion
+    
+    Note: This endpoint is deprecated. Use the WebSocket endpoint at /ws/{session_id} instead.
+    This endpoint will be removed in a future release.
     """
+    # Log deprecation warning
+    logger.warning("The /chat/completions endpoint is deprecated. Use the WebSocket endpoint at /ws/{session_id} instead.")
+    
+    # Redirect to WebSocket implementation
     try:
         # Validate project if context provided
         project_context = None
@@ -367,13 +333,6 @@ async def chat_completion(
             content=request.messages[-1].content
         ))
         
-        # Try to get cached response for the exact same conversation
-        cache_key = f"chat_completion:{session.id}:{hash(str(llm_messages))}"
-        cached_response = await cache.get(cache_key) if cache else None
-        
-        if cached_response:
-            return cached_response
-        
         # Generate response using LLM service
         try:
             response_message = await llm_service.generate_completion(llm_messages, project_context)
@@ -395,10 +354,6 @@ async def chat_completion(
                 "role": "assistant",
                 "content": response_message.content
             }
-            
-            # Cache the response if cache is available
-            if cache:
-                await cache.set(cache_key, response, 3600)  # Cache for 1 hour
             
             return response
             
@@ -428,7 +383,6 @@ async def chat_completion(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error processing chat completion: {str(e)}"
         )
-
 
 
 @router.websocket("/ws/{session_id}")
