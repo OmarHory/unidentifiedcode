@@ -16,7 +16,8 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
     loadChatSession,
     setSessionId,
     sendMessage: sendChatMessage,
-    isProcessing: isApiProcessing
+    isProcessing: isApiProcessing,
+    setMessages
   } = useChat();
   
   const [inputMessage, setInputMessage] = useState('');
@@ -85,6 +86,13 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
       wsRef.current.close(1000, "New connection requested");
       wsRef.current = null;
     }
+    
+    // Load chat session data if we have a session ID
+    // This ensures we have the latest messages when refreshing the page
+    loadChatSession(sessionId).catch(err => {
+      console.error('Error loading chat session:', err);
+      toast.error('Failed to load chat history');
+    });
     
     const wsBaseUrl = getWebSocketBaseUrl();
     const wsUrl = `${wsBaseUrl}/chat/ws/${sessionId}`;
@@ -233,12 +241,29 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
     }, 100);
     
     try {
-      // Send the message using the chat context
-      await sendChatMessage(messageContent);
+      // Send the message using the chat context to update local state
+      const userMessage = await sendChatMessage(messageContent);
+      
+      // Now send the message via WebSocket if connected
+      if (wsRef.current && wsConnected) {
+        // Prepare project context if needed
+        const projectContext = projectId ? { project_id: projectId } : null;
+        
+        // Send the message through WebSocket
+        wsRef.current.send(JSON.stringify({
+          message: userMessage,
+          project_id: projectId
+        }));
+        
+        console.log('Message sent via WebSocket:', userMessage);
+      } else {
+        console.error('WebSocket not connected, cannot send message');
+        toast.error('Not connected to chat server. Please refresh the page.');
+        setIsLoading(false);
+      }
     } catch (error) {
       console.error('Error sending message:', error);
       toast.error('Failed to send message. Please try again.');
-    } finally {
       setIsLoading(false);
     }
   };
@@ -569,9 +594,10 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
         ref={chatContainerRef}
         style={{ maxHeight: 'calc(100vh - 180px)' }}
       >
-        <AnimatePresence>
+        <AnimatePresence mode="wait">
           {messages.length === 0 ? (
             <motion.div 
+              key="empty-state"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               className="h-full flex flex-col items-center justify-center text-center p-6 text-gray-400 min-h-[300px]"
@@ -583,7 +609,10 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
               </p>
             </motion.div>
           ) : (
-            <div className="flex flex-col w-full space-y-4">
+            <motion.div 
+              key="message-list"
+              className="flex flex-col w-full space-y-4"
+            >
               {messages
                 .filter(message => message !== null && message !== undefined)
                 .map((message, index) => (
@@ -592,11 +621,12 @@ export default function ChatInterface({ projectId, onCodeSuggestion }) {
               }
               {/* Add extra space at the bottom to ensure last message is fully visible */}
               <div className="h-4"></div>
-            </div>
+            </motion.div>
           )}
           
           {(isLoading || isApiProcessing) && !messages.some(m => m.role === 'assistant' && !m.content) && (
             <motion.div 
+              key="loading-indicator"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               className="flex justify-start mb-4"

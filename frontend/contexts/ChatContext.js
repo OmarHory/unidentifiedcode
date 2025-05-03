@@ -67,8 +67,21 @@ export function ChatProvider({ children }) {
         
         const mostRecentSession = sortedSessions[0];
         setCurrentChatSession(mostRecentSession);
-        setSessionId(mostRecentSession.id);
-        loadChatSession(mostRecentSession.id);
+        
+        // Check if there's a session ID in localStorage
+        const savedSessionId = localStorage.getItem('currentSessionId');
+        
+        if (savedSessionId && sessions.some(session => session.id === savedSessionId)) {
+          // If we have a saved session ID and it exists in our sessions, use it
+          setSessionId(savedSessionId);
+          loadChatSession(savedSessionId);
+        } else {
+          // Otherwise use the most recent session
+          setSessionId(mostRecentSession.id);
+          loadChatSession(mostRecentSession.id);
+          // Save this session ID to localStorage
+          localStorage.setItem('currentSessionId', mostRecentSession.id);
+        }
       } else {
         // No sessions found, create a new one
         createChatSession(projectId);
@@ -96,6 +109,9 @@ export function ChatProvider({ children }) {
       setChatSessions(prev => [newSession, ...prev]);
       setMessages([]);
       
+      // Save session ID to localStorage
+      localStorage.setItem('currentSessionId', newSession.id);
+      
       return newSession.id;
     } catch (err) {
       console.error('Error creating chat session:', err);
@@ -120,6 +136,9 @@ export function ChatProvider({ children }) {
         } else {
           setMessages([]);
         }
+        
+        // Save this session ID to localStorage
+        localStorage.setItem('currentSessionId', sid);
       }
     } catch (err) {
       console.error('Error loading chat session:', err);
@@ -128,6 +147,8 @@ export function ChatProvider({ children }) {
       if (err.response && err.response.status === 404 && currentProject) {
         // Remove the invalid session from our list
         setChatSessions(prev => prev.filter(session => session.id !== sid));
+        // Remove from localStorage
+        localStorage.removeItem('currentSessionId');
         // Create a new session
         createChatSession(currentProject.id);
       } else {
@@ -154,28 +175,11 @@ export function ChatProvider({ children }) {
       // Prepare project context if needed
       const projectContext = currentProject ? { project_id: currentProject.id } : null;
       
-      // Send message to API
-      const response = await chatApi.sendMessage([...messages, userMessage], sessionId, projectContext);
+      // Check if WebSocket is connected in ChatInterface component
+      // The actual message sending is now handled by the WebSocket in ChatInterface
+      // This function now only updates the local state
       
-      // The API returns the message directly, not wrapped in a 'message' property
-      const assistantMessage = response.data;
-      
-      // Ensure the message has the required properties
-      if (assistantMessage) {
-        // Add assistant's response to messages
-        setMessages((prev) => [...prev, assistantMessage]);
-        return assistantMessage;
-      } else {
-        console.error('Unexpected API response format:', response.data);
-        const fallbackMessage = {
-          id: uuidv4(),
-          role: 'assistant',
-          content: 'Sorry, I received an unexpected response format. Please try again.',
-          created_at: new Date().toISOString(),
-        };
-        setMessages((prev) => [...prev, fallbackMessage]);
-        return fallbackMessage;
-      }
+      return userMessage;
     } catch (err) {
       setError(err.message || 'Error sending message');
       throw err;
@@ -281,6 +285,7 @@ export function ChatProvider({ children }) {
     <ChatContext.Provider
       value={{
         messages,
+        setMessages,
         sessionId,
         chatSessions,
         currentChatSession,

@@ -69,3 +69,48 @@ class VoiceTranscriptionRequest(BaseModel):
     
 class VoiceTranscriptionResponse(BaseModel):
     text: str
+
+
+
+
+
+
+class Message(BaseModel):
+    role: str
+    content: str
+    id: Optional[str] = None
+    created_at: Optional[str] = None
+
+class ProjectContext(BaseModel):
+    project_id: str
+    file_path: Optional[str] = None
+
+class ChatRequest(BaseModel):
+    messages: List[Message]
+    session_id: str
+    project_context: Optional[ProjectContext] = None
+
+class ChatSessionCreate(BaseModel):
+    project_id: str
+    name: Optional[str] = None
+    
+class ChatMessageResponse(BaseModel):
+    id: str
+    role: str
+    content: str
+    created_at: str
+    
+class ChatSessionResponse(BaseModel):
+    id: str
+    project_id: Optional[str] = None
+    name: Optional[str] = None
+    created_at: str
+    updated_at: Optional[str] = None
+    
+class ChatSessionDetailResponse(BaseModel):
+    id: str
+    project_id: Optional[str] = None
+    name: Optional[str] = None
+    created_at: str
+    updated_at: Optional[str] = None
+    messages: List[ChatMessageResponse]

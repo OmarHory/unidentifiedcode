@@ -325,8 +325,9 @@ export const chatApi = {
     api.delete(`/chat/sessions/${sessionId}`),
     
   // Chat messages
-  sendMessage: (messages, sessionId, projectContext) => 
-    api.post('/chat/completions', { messages, session_id: sessionId, project_context: projectContext }),
+  // WebSocket is now used for sending messages instead of this API endpoint
+  // sendMessage: (messages, sessionId, projectContext) => 
+  //   api.post('/chat/completions', { messages, session_id: sessionId, project_context: projectContext }),
 };
 
 // Voice API
