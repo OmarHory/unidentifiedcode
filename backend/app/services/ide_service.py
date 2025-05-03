@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 from app.core.logger import logger
 
-from app.models.ide import ProjectFile, Project, FileContent
+from app.models.ide_pydantic import ProjectFile, Project, FileContent
 
 # Update the projects directory path to work with the new structure
 PROJECTS_DIR = Path("projects").resolve()

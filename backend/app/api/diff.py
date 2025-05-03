@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Body
 from typing import Dict, Any, List
 
-from app.models.ide import ApplyDiffRequest, ApplyDiffResponse
+from app.models.ide_pydantic import ApplyDiffRequest, ApplyDiffResponse
 from app.services.diff_service import DiffService
 from app.services.ide_service import IDEService
 from app.services.llm_service import LLMService

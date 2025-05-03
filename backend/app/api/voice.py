@@ -13,15 +13,15 @@ from datetime import datetime
 from openai import OpenAIError
 import websockets
 
-from app.models.chat import VoiceTranscriptionRequest, VoiceTranscriptionResponse
+from app.models.chat_pydantic import VoiceTranscriptionRequest, VoiceTranscriptionResponse
 from app.models.chat_models import VoiceSession
 from app.services.voice_service import VoiceService
 from app.core.logger import logger
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.auth import get_current_user
-from app.models.user import User
-from app.models.project import Project
+from app.models.user_models import User
+from app.models.project_models import Project
 
 router = APIRouter()
 

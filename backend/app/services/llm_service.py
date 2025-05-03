@@ -1,10 +1,9 @@
-import json
 import uuid
 from typing import List, Dict, Any, Optional, AsyncGenerator
 
-from openai import OpenAI, AsyncOpenAI
+from openai import AsyncOpenAI
 from app.core.config import settings
-from app.models.chat import ChatMessage, MessageRole, MessageContent, MessageType
+from app.models.chat_pydantic import ChatMessagePydantic, MessageRole, MessageContent, MessageType
 from app.core.logger import logger
 
 class LLMService:
@@ -17,7 +16,7 @@ class LLMService:
     
     async def generate_completion_stream(
         self,
-        messages: List[ChatMessage],
+        messages: List[ChatMessagePydantic],
         project_context: Optional[Dict[str, Any]] = None
     ) -> AsyncGenerator[str, None]:
         """
@@ -61,6 +60,7 @@ class LLMService:
             
             async for chunk in stream:
                 if chunk.choices[0].delta.content is not None:
+                    logger.debug(f"Received chunk: {chunk.choices[0].delta.content}")
                     yield chunk.choices[0].delta.content
                     
         except Exception as e:
@@ -69,9 +69,9 @@ class LLMService:
     
     async def generate_completion(
         self,
-        messages: List[ChatMessage],
+        messages: List[ChatMessagePydantic],
         project_context: Optional[Dict[str, Any]] = None
-    ) -> ChatMessage:
+    ) -> ChatMessagePydantic:
         """
         Generate a chat completion (uses streaming internally)
         
@@ -80,7 +80,7 @@ class LLMService:
             project_context: Optional project context
             
         Returns:
-            ChatMessage with the completion
+            ChatMessagePydantic with the completion
         """
         try:
             # Use streaming to generate the completion
@@ -89,7 +89,7 @@ class LLMService:
                 full_response += chunk
             
             # Create chat message from the response with a unique ID
-            return ChatMessage(
+            return ChatMessagePydantic(
                 id=str(uuid.uuid4()),
                 role=MessageRole.ASSISTANT,
                 content=full_response
@@ -101,7 +101,7 @@ class LLMService:
     
     def _convert_to_openai_messages(
         self, 
-        messages: List[ChatMessage], 
+        messages: List[ChatMessagePydantic], 
         project_context: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
@@ -136,11 +136,11 @@ class LLMService:
         
         return openai_messages
     
-    def _convert_from_openai_message(self, openai_message: Any) -> ChatMessage:
+    def _convert_from_openai_message(self, openai_message: Any) -> ChatMessagePydantic:
         """
         Convert OpenAI message format to our internal format
         """
-        return ChatMessage(
+        return ChatMessagePydantic(
             id=str(uuid.uuid4()),
             role=MessageRole(openai_message.role),
             content=openai_message.content or ""

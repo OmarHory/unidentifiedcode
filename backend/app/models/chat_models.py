@@ -2,7 +2,7 @@ from sqlalchemy import Column, String, DateTime, ForeignKey, Text, JSON, Float, 
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
-from app.models.chat import MessageRole, MessageType
+from app.models.chat_pydantic import MessageRole, MessageType
 import uuid
 
 class ChatSession(Base):

@@ -7,11 +7,11 @@ from alembic import context
 
 # Import your models here
 from app.core.database import Base
-from app.models.user import User
-from app.models.project import Project
-from app.models.file import File
-from app.models.chat_models import ChatSession, ChatMessage, VoiceSession
-from app.models.diff import Diff
+from app.models.user_models import User
+from app.models.project_models import Project
+from app.models.file_models import File
+from app.models.chat_pydantic import ChatSession, ChatMessage, VoiceSession
+from app.models.diff_models import Diff
 
 # this is the Alembic Config object
 config = context.config

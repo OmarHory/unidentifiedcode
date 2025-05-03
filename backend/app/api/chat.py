@@ -10,13 +10,18 @@ from datetime import datetime
 from app.core.database import get_db
 from app.core.auth import get_current_user
 from app.models.chat_models import ChatSession, ChatMessage
-from app.models.user import User
-from app.models.project import Project
-from app.models.chat import MessageRole, MessageType
+from app.models.chat_pydantic import ChatMessagePydantic
+from app.models.user_models import User
+from app.models.project_models import Project
+from app.models.chat_pydantic import MessageRole
 from app.services.llm_service import llm_service
 from app.services.ide_service import IDEService
 from app.core.cache import cache
 from app.core.logger import logger
+from app.services.session_service import session_service
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+
+
 
 router = APIRouter()
 
@@ -63,11 +68,6 @@ class ChatSessionDetailResponse(BaseModel):
     updated_at: Optional[str] = None
     messages: List[ChatMessageResponse]
 
-class StreamResponse(BaseModel):
-    type: str
-    message_id: Optional[str] = None
-    message: Optional[dict] = None
-    chunk: Optional[str] = None
 
 @router.post("/sessions", response_model=ChatSessionResponse)
 async def create_chat_session(
@@ -429,82 +429,150 @@ async def chat_completion(
             detail=f"Error processing chat completion: {str(e)}"
         )
 
+
+
 @router.websocket("/ws/{session_id}")
-async def websocket_endpoint(
-    websocket: WebSocket,
-    session_id: str,
-    db: AsyncSession = Depends(get_db)
-):
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    """
+    WebSocket endpoint for real-time chat
+    """
+    print("#####\n\n\nDoneBefore\n\n\n\n")
+
     await websocket.accept()
+    logger.info(f"WebSocket connection accepted for session {session_id}")
+    print("#####\n\n\nDone\n\n\n\n")
+
+    messages = await session_service.get_session(session_id)
+
+    if not messages:
+        messages = []
     
     try:
-        # TODO: Implement WebSocket authentication
-        
         while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            
-            if message["type"] == "message":
-                # Validate project if context provided
-                if "project_context" in message:
-                    result = await db.execute(
-                        select(Project)
-                        .where(Project.id == message["project_context"]["project_id"])
-                    )
-                    project = result.scalar_one_or_none()
-                    if not project:
-                        await websocket.send_json({
-                            "type": "error",
-                            "detail": f"Project not found: {message['project_context']['project_id']}"
-                        })
-                        continue
-
-                # Create message in database
-                chat_message = ChatMessage(
-                    id=str(uuid.uuid4()),
-                    session_id=session_id,
-                    role="user",
-                    content_type="text",
-                    content=message["content"]
-                )
-                db.add(chat_message)
-                await db.commit()
-
-                # Send stream start
-                response_id = str(uuid.uuid4())
-                await websocket.send_json({
-                    "type": "stream_start",
-                    "message": {
-                        "id": response_id,
-                        "role": "assistant",
-                        "content": None
-                    }
-                })
-
-                # TODO: Implement actual streaming chat completion
-                # For now, just echo back the message in chunks
-                chunks = message["content"].split()
-                content = ""
+            # Receive message from client
+            try:
+                data = await websocket.receive_json()
+                logger.info(f"Received WebSocket message for session {session_id}: {type(data)}, {data}")
                 
-                for chunk in chunks:
-                    content += chunk + " "
+                # Process message
+                if "message" in data and "role" in data["message"]:
+                    # Create chat message
+                    message = ChatMessagePydantic(
+                        id=data.get("id", str(uuid.uuid4())),
+                        role=data["message"]["role"],
+                        content=data["message"]["content"],
+                    )
+                    
+                    # Store user message
+                    if message.role == MessageRole.USER:
+                        messages.append(message)
+                        await session_service.save_session(session_id, messages)
+                    
+                    # Generate response if it's a user message
+                    if message.role == MessageRole.USER:
+                        try:
+                            # Get project context if provided
+                            project_context = None
+                            if "project_id" in data:
+                                project_id = data["project_id"]
+                                project_context = ide_service.get_project_context(project_id)
+                            
+                            # Generate response with streaming
+                            logger.info(f"Generating streaming response for session {session_id} with {len(messages)} messages")
+                            
+                            # Send initial response with an empty message to indicate streaming start
+                            stream_message_id = str(uuid.uuid4())
+                            await websocket.send_json({
+                                "type": "stream_start",
+                                "message": {
+                                    "id": stream_message_id,
+                                    "role": "assistant",
+                                    "content": ""
+                                },
+                                "session_id": session_id
+                            })
+                            
+                            # Accumulate the full response content
+                            full_content = ""
+                            try:
+                                async for content_chunk in llm_service.generate_completion_stream(
+                                    messages,
+                                    project_context
+                                ):
+                                    full_content += content_chunk
+                                    
+                                    # Send the chunk to the client
+                                    try:
+                                        await websocket.send_json({
+                                            "type": "stream_chunk",
+                                            "message_id": stream_message_id,
+                                            "chunk": content_chunk
+                                        })
+                                        logger.debug(f"Sent chunk to client: {len(content_chunk)} chars")
+                                    except Exception as chunk_error:
+                                        logger.error(f"Error sending chunk: {str(chunk_error)}")
+                                        break
+                            except Exception as stream_error:
+                                logger.error(f"Error during streaming: {str(stream_error)}")
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "error": f"Error during streaming: {str(stream_error)}"
+                                })
+                            
+                            # Create the final message if we have content
+                            if full_content:
+                                response_message = ChatMessagePydantic(
+                                    id=stream_message_id,
+                                    role=MessageRole.ASSISTANT,
+                                    content=full_content
+                                )
+                                
+                                # Store assistant message
+                                messages.append(response_message)
+                                
+                                # Save the session to persistent storage
+                                await session_service.save_session(session_id, messages)
+                                
+                                # Indicate stream is complete
+                                await websocket.send_json({
+                                    "type": "stream_end",
+                                    "message_id": stream_message_id,
+                                    "session_id": session_id
+                                })
+                                logger.info(f"Streaming complete for session {session_id}, response length: {len(full_content)}")
+                            
+                        except Exception as e:
+                            logger.error(f"Error in WebSocket streaming: {str(e)}")
+                            try:
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "error": f"Error generating response: {str(e)}"
+                                })
+                            except Exception as send_error:
+                                logger.error(f"Error sending error message: {str(send_error)}")
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket disconnected for session {session_id} while receiving message")
+                break
+            except Exception as e:
+                logger.error(f"Unexpected error in WebSocket communication: {str(e)}")
+                try:
                     await websocket.send_json({
-                        "type": "stream_chunk",
-                        "message_id": response_id,
-                        "chunk": chunk + " "
+                        "type": "error",
+                        "error": f"Unexpected error: {str(e)}"
                     })
-
-                # Save complete response
-                response = ChatMessage(
-                    id=response_id,
-                    session_id=session_id,
-                    role="assistant",
-                    content_type="text",
-                    content=content.strip()
-                )
-                db.add(response)
-                await db.commit()
-
+                except:
+                    # If we can't send the error, the connection is probably gone
+                    logger.error("Failed to send error message, connection probably lost")
+                    break
+    
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for session {session_id}")
     except Exception as e:
-        await db.rollback()
-        await websocket.close()
+        logger.error(f"Unhandled WebSocket error: {str(e)}")
+    
+    # Save the session before cleaning up
+    try:
+        await session_service.save_session(session_id, messages)
+        logger.info(f"Session {session_id} saved on disconnection")
+    except Exception as e:
+        logger.error(f"Error saving session on disconnection: {str(e)}")

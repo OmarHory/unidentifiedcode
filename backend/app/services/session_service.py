@@ -2,7 +2,7 @@ from typing import List, Optional, Dict, Any
 import json
 from datetime import datetime, timedelta
 from app.core.cache import cache
-from app.models.chat import ChatMessage
+from app.models.chat_pydantic import ChatMessagePydantic
 from app.core.config import settings
 
 class SessionService:
@@ -10,7 +10,7 @@ class SessionService:
         self.session_prefix = "chat_session:"
         self.session_ttl = 60 * 60 * 24 * 7  # 7 days
 
-    async def get_session(self, session_id: str) -> Optional[List[ChatMessage]]:
+    async def get_session(self, session_id: str) -> Optional[List[ChatMessagePydantic]]:
         """Get chat session from Redis"""
         key = f"{self.session_prefix}{session_id}"
         data = await cache.get(key)
@@ -19,21 +19,21 @@ class SessionService:
             return None
             
         try:
-            # Convert raw data back to ChatMessage objects
+            # Convert raw data back to ChatMessagePydantic objects
             messages = []
             for msg_data in data:
-                messages.append(ChatMessage(**msg_data))
+                messages.append(ChatMessagePydantic(**msg_data))
             return messages
         except Exception as e:
             print(f"Error deserializing session data: {str(e)}")
             return None
 
-    async def save_session(self, session_id: str, messages: List[ChatMessage]) -> bool:
+    async def save_session(self, session_id: str, messages: List[ChatMessagePydantic]) -> bool:
         """Save chat session to Redis"""
         key = f"{self.session_prefix}{session_id}"
         
         try:
-            # Convert ChatMessage objects to dictionaries
+            # Convert ChatMessagePydantic objects to dictionaries
             data = [msg.dict() for msg in messages]
             return await cache.set(key, data, self.session_ttl)
         except Exception as e:

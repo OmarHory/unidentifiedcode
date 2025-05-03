@@ -6,7 +6,7 @@ from datetime import datetime
 import uuid
 
 from app.models.chat_models import ChatSession, ChatMessage
-from app.models.chat import MessageRole, MessageType
+from app.models.chat_pydantic import MessageRole, MessageType
 from app.core.logger import logger
 from app.core.config import settings
 

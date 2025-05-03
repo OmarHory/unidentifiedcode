@@ -35,4 +35,4 @@ class ApplyDiffResponse(BaseModel):
     success: bool
     file_path: str
     content: Optional[str] = None
-    error: Optional[str] = None 
+    error: Optional[str] = None

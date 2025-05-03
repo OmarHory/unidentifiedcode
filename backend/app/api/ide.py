@@ -6,10 +6,10 @@ from app.core.logger import logger
 from app.core.database import get_db
 from app.core.auth import get_current_user
 
-from app.models.project import Project
-from app.models.file import File
-from app.models.user import User
-from app.api.models import ProjectCreate, ProjectResponse, FileResponse, FileListResponse, FileOperation
+from app.models.project_models import Project
+from app.models.file_models import File
+from app.models.user_models import User
+from app.models.project_pydantic import ProjectCreate, ProjectResponse, FileResponse, FileListResponse, FileOperation
 
 router = APIRouter()
 

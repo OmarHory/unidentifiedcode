@@ -36,7 +36,7 @@ class MessageContent(BaseModel):
     diff: Optional[CodeDiff] = None
     audio_url: Optional[str] = None
 
-class ChatMessage(BaseModel):
+class ChatMessagePydantic(BaseModel):
     id: Optional[str] = Field(None, description="Message ID")
     role: MessageRole
     content: Union[str, List[MessageContent]]
@@ -47,13 +47,21 @@ class ChatMessage(BaseModel):
             datetime: lambda v: v.isoformat(),
         }
 
+    def dict(self, *args, **kwargs):
+        data = super().dict(*args, **kwargs)
+        if self.created_at:
+            data["created_at"] = self.created_at.isoformat()
+        if isinstance(self.content, list):
+            data["content"] = [item.dict() if hasattr(item, "dict") else item for item in self.content]
+        return data
+
 class ChatCompletionRequest(BaseModel):
-    messages: List[ChatMessage]
+    messages: List[ChatMessagePydantic  ]
     session_id: Optional[str] = None
     project_context: Optional[Dict[str, Any]] = None
 
 class ChatCompletionResponse(BaseModel):
-    message: ChatMessage
+    message: ChatMessagePydantic
     session_id: str
     
 class VoiceTranscriptionRequest(BaseModel):
@@ -61,4 +69,3 @@ class VoiceTranscriptionRequest(BaseModel):
     
 class VoiceTranscriptionResponse(BaseModel):
     text: str
-    confidence: float 

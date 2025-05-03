@@ -8,7 +8,7 @@ from passlib.context import CryptContext
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.database import engine, Base, AsyncSessionLocal
-from app.models.user import User
+from app.models.user_models import User
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

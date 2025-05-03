@@ -2,7 +2,7 @@ from sqlalchemy import Column, String, DateTime, ForeignKey, Text, JSON, Enum as
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
-from app.models.chat import DiffOperation
+from app.models.chat_pydantic import DiffOperation
 import uuid
 
 class Diff(Base):

@@ -25,6 +25,3 @@ class File(Base):
 
     # Relationships
     project = relationship("Project", back_populates="files")
-
-    class Config:
-        orm_mode = True
